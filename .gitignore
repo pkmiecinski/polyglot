@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.venv-tts/
+ENV/
+
+# Audio files
+*.wav
+*.mp3
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Models cache (optional - large)
+# ~/.cache/huggingface/
+
+# Temp files
+*.tmp
+*.temp

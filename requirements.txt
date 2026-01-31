@@ -1,0 +1,23 @@
+# Qwen3-ASR package
+qwen-asr
+
+# Translation (NLLB-200)
+transformers>=4.30.0
+sentencepiece
+
+# Text-to-Speech (XTTS-v2)
+# Note: TTS runs in separate venv (.venv-tts) due to transformers conflict
+# Setup: python3.10 -m venv .venv-tts && .venv-tts/bin/pip install TTS 'torch<2.6' 'torchaudio<2.6' 'transformers<4.46'
+
+# Audio processing
+sounddevice
+numpy
+scipy
+
+# PyTorch (with CUDA support if available)
+torch
+torchaudio
+
+# CLI interface
+rich
+click
