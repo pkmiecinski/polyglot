@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""
+Persistent TTS server that keeps the model loaded in memory.
+Communicates via Unix socket for fast synthesis requests.
+
+This runs in the .venv-tts virtualenv to avoid dependency conflicts.
+"""
+
+import argparse
+import json
+import sys
+import os
+import socket
+import struct
+import tempfile
+import signal
+import threading
+from pathlib import Path
+
+# Socket path
+SOCKET_PATH = "/tmp/polyglot_tts.sock"
+LOCK_FILE = "/tmp/polyglot_tts.lock"
+
+
+def send_message(sock, data: dict):
+    """Send a JSON message with length prefix."""
+    msg = json.dumps(data).encode('utf-8')
+    sock.sendall(struct.pack('!I', len(msg)) + msg)
+
+
+def recv_message(sock) -> dict:
+    """Receive a JSON message with length prefix."""
+    # Read length prefix (4 bytes)
+    raw_len = sock.recv(4)
+    if not raw_len:
+        return None
+    msg_len = struct.unpack('!I', raw_len)[0]
+    
+    # Read message
+    data = b''
+    while len(data) < msg_len:
+        chunk = sock.recv(min(msg_len - len(data), 4096))
+        if not chunk:
+            return None
+        data += chunk
+    
+    return json.loads(data.decode('utf-8'))
+
+
+class TTSServer:
+    """Persistent TTS server with pre-loaded model."""
+    
+    def __init__(self, device: str = "auto"):
+        self.device = device
+        self.tts = None
+        self.running = False
+        
+    def load_model(self):
+        """Load the XTTS-v2 model."""
+        from TTS.api import TTS
+        import torch
+        
+        # Force CPU for XTTS-v2 (MPS has channel limit issues)
+        device = "cpu"
+        if self.device == "cuda" and torch.cuda.is_available():
+            device = "cuda"
+        
+        print(f"[TTS Server] Loading XTTS-v2 on {device}...", file=sys.stderr)
+        self.tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+        print(f"[TTS Server] Model loaded and ready!", file=sys.stderr)
+        
+    def synthesize(self, text: str, language: str, speaker_wav: str = None, output_path: str = None) -> dict:
+        """Synthesize speech from text."""
+        if self.tts is None:
+            return {"success": False, "error": "Model not loaded"}
+        
+        try:
+            if output_path is None:
+                output_path = tempfile.mktemp(suffix=".wav")
+            
+            if speaker_wav and os.path.exists(speaker_wav):
+                self.tts.tts_to_file(
+                    text=text,
+                    file_path=output_path,
+                    speaker_wav=speaker_wav,
+                    language=language,
+                )
+            else:
+                # Use default speaker
+                wav = self.tts.synthesizer.tts(
+                    text=text,
+                    language_name=language,
+                    speaker_name="Claribel Dervla",
+                )
+                self.tts.synthesizer.save_wav(wav, output_path)
+            
+            return {"success": True, "output": output_path}
+            
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def handle_client(self, conn):
+        """Handle a single client connection."""
+        try:
+            request = recv_message(conn)
+            if request is None:
+                return
+            
+            cmd = request.get("cmd")
+            
+            if cmd == "ping":
+                send_message(conn, {"status": "ok", "loaded": self.tts is not None})
+                
+            elif cmd == "synthesize":
+                result = self.synthesize(
+                    text=request.get("text", ""),
+                    language=request.get("language", "en"),
+                    speaker_wav=request.get("speaker_wav"),
+                    output_path=request.get("output_path"),
+                )
+                send_message(conn, result)
+                
+            elif cmd == "shutdown":
+                send_message(conn, {"status": "shutting_down"})
+                self.running = False
+                
+            else:
+                send_message(conn, {"error": f"Unknown command: {cmd}"})
+                
+        except Exception as e:
+            try:
+                send_message(conn, {"error": str(e)})
+            except:
+                pass
+        finally:
+            conn.close()
+    
+    def run(self):
+        """Run the server."""
+        # Clean up old socket
+        if os.path.exists(SOCKET_PATH):
+            os.remove(SOCKET_PATH)
+        
+        # Load model first
+        self.load_model()
+        
+        # Create Unix socket
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(SOCKET_PATH)
+        server.listen(5)
+        server.settimeout(1.0)  # Allow checking self.running
+        
+        # Write PID to lock file
+        with open(LOCK_FILE, 'w') as f:
+            f.write(str(os.getpid()))
+        
+        print(f"[TTS Server] Listening on {SOCKET_PATH}", file=sys.stderr)
+        self.running = True
+        
+        def signal_handler(sig, frame):
+            print(f"\n[TTS Server] Shutting down...", file=sys.stderr)
+            self.running = False
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        try:
+            while self.running:
+                try:
+                    conn, addr = server.accept()
+                    # Handle in thread to allow concurrent requests
+                    thread = threading.Thread(target=self.handle_client, args=(conn,))
+                    thread.daemon = True
+                    thread.start()
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.running:
+                        print(f"[TTS Server] Error: {e}", file=sys.stderr)
+        finally:
+            server.close()
+            if os.path.exists(SOCKET_PATH):
+                os.remove(SOCKET_PATH)
+            if os.path.exists(LOCK_FILE):
+                os.remove(LOCK_FILE)
+            print(f"[TTS Server] Stopped", file=sys.stderr)
+
+
+class TTSClient:
+    """Client to communicate with the TTS server."""
+    
+    @staticmethod
+    def is_server_running() -> bool:
+        """Check if the server is running."""
+        if not os.path.exists(SOCKET_PATH):
+            return False
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(2.0)
+            sock.connect(SOCKET_PATH)
+            send_message(sock, {"cmd": "ping"})
+            response = recv_message(sock)
+            sock.close()
+            return response and response.get("status") == "ok"
+        except:
+            return False
+    
+    @staticmethod
+    def synthesize(text: str, language: str, speaker_wav: str = None, output_path: str = None) -> dict:
+        """Send synthesis request to server."""
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(120.0)  # 2 minute timeout for synthesis
+        
+        try:
+            sock.connect(SOCKET_PATH)
+            
+            request = {
+                "cmd": "synthesize",
+                "text": text,
+                "language": language,
+            }
+            if speaker_wav:
+                request["speaker_wav"] = speaker_wav
+            if output_path:
+                request["output_path"] = output_path
+            
+            send_message(sock, request)
+            response = recv_message(sock)
+            return response
+            
+        finally:
+            sock.close()
+    
+    @staticmethod
+    def shutdown():
+        """Send shutdown command to server."""
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5.0)
+            sock.connect(SOCKET_PATH)
+            send_message(sock, {"cmd": "shutdown"})
+            sock.close()
+        except:
+            pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description="XTTS-v2 TTS Server")
+    parser.add_argument("--mode", choices=["server", "client", "status", "stop"], default="server",
+                        help="Mode: server (run daemon), client (synthesize), status, stop")
+    parser.add_argument("--device", default="auto", help="Device: auto, cuda, mps, cpu")
+    
+    # Client mode arguments
+    parser.add_argument("--text", help="Text to synthesize (client mode)")
+    parser.add_argument("--language", default="en", help="Language code")
+    parser.add_argument("--speaker-wav", help="Speaker WAV for voice cloning")
+    parser.add_argument("--output", help="Output WAV path")
+    
+    args = parser.parse_args()
+    
+    if args.mode == "server":
+        server = TTSServer(device=args.device)
+        server.run()
+        
+    elif args.mode == "status":
+        if TTSClient.is_server_running():
+            print("TTS Server is running")
+            sys.exit(0)
+        else:
+            print("TTS Server is not running")
+            sys.exit(1)
+            
+    elif args.mode == "stop":
+        if TTSClient.is_server_running():
+            TTSClient.shutdown()
+            print("Shutdown signal sent")
+        else:
+            print("Server not running")
+            
+    elif args.mode == "client":
+        if not args.text:
+            print("Error: --text required for client mode", file=sys.stderr)
+            sys.exit(1)
+        
+        if not TTSClient.is_server_running():
+            print("Error: TTS server not running. Start with: tts_server.py --mode server", file=sys.stderr)
+            sys.exit(1)
+        
+        result = TTSClient.synthesize(
+            text=args.text,
+            language=args.language,
+            speaker_wav=args.speaker_wav,
+            output_path=args.output,
+        )
+        print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

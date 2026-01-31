@@ -252,11 +252,11 @@ class ModelLoaderThread(QThread):
             self.transcriber.load_model()
             self.model_loaded.emit("ASR")
             self.log.emit("✓ ASR model loaded successfully", "success")
-            self.progress.emit("ASR model loaded", 40)
+            self.progress.emit("ASR model loaded", 33)
             
             # Load Translation model (NLLB-200)
             self.log.emit("Initializing Translation engine (NLLB-200-600M)...", "info")
-            self.progress.emit("Loading translation model...", 50)
+            self.progress.emit("Loading translation model...", 40)
             
             self.translator = Translator(
                 model_name="facebook/nllb-200-distilled-600M",
@@ -265,17 +265,18 @@ class ModelLoaderThread(QThread):
             self.translator.load_model()
             self.model_loaded.emit("Translation")
             self.log.emit("✓ Translation model loaded successfully", "success")
-            self.progress.emit("Translation model loaded", 75)
+            self.progress.emit("Translation model loaded", 66)
             
-            # Load TTS model (XTTS-v2)
-            self.log.emit("Initializing TTS engine (XTTS-v2)...", "info")
-            self.progress.emit("Loading TTS model...", 85)
+            # Load TTS server (XTTS-v2) - this takes ~30s on first load
+            self.log.emit("Starting TTS server (XTTS-v2)...", "info")
+            self.log.emit("⏳ TTS model loading (~30s first time, then instant)", "info")
+            self.progress.emit("Starting TTS server...", 70)
             
             self.tts = TextToSpeech(device=self.device)
-            self.tts.load_model()
+            self.tts.load_model()  # This starts the persistent server
             self.model_loaded.emit("TTS")
-            self.log.emit("✓ TTS engine ready (runs via subprocess)", "success")
-            self.progress.emit("TTS engine ready", 100)
+            self.log.emit("✓ TTS server running (model pre-loaded)", "success")
+            self.progress.emit("TTS server ready", 100)
             
             self.log.emit("All models loaded! Ready for translation.", "success")
             self.finished.emit(True, "All models loaded successfully")

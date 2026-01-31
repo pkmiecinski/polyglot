@@ -2,13 +2,16 @@
 Text-to-Speech module using Coqui XTTS-v2.
 
 Supports 17 languages with voice cloning from a 6-second audio clip.
-Uses a separate virtualenv (.venv-tts) to avoid dependency conflicts.
+Uses a persistent TTS server to avoid model reloading on each request.
 """
 
 import os
 import subprocess
 import tempfile
 import json
+import socket
+import struct
+import time
 from dataclasses import dataclass
 from typing import Optional
 from pathlib import Path
@@ -20,7 +23,10 @@ console = Console()
 
 # Path to TTS virtualenv Python
 TTS_VENV_PYTHON = Path(__file__).parent / ".venv-tts" / "bin" / "python"
-TTS_WORKER_SCRIPT = Path(__file__).parent / "tts_worker.py"
+TTS_SERVER_SCRIPT = Path(__file__).parent / "tts_server.py"
+
+# Socket path for TTS server
+SOCKET_PATH = "/tmp/polyglot_tts.sock"
 
 # XTTS-v2 supported languages
 SUPPORTED_LANGUAGES = {
@@ -48,6 +54,45 @@ LANGUAGE_TO_CODE = {k.lower(): v for k, v in SUPPORTED_LANGUAGES.items()}
 CODE_TO_LANGUAGE = {v: k for k, v in SUPPORTED_LANGUAGES.items()}
 
 
+def _send_message(sock, data: dict):
+    """Send a JSON message with length prefix."""
+    msg = json.dumps(data).encode('utf-8')
+    sock.sendall(struct.pack('!I', len(msg)) + msg)
+
+
+def _recv_message(sock) -> dict:
+    """Receive a JSON message with length prefix."""
+    raw_len = sock.recv(4)
+    if not raw_len:
+        return None
+    msg_len = struct.unpack('!I', raw_len)[0]
+    
+    data = b''
+    while len(data) < msg_len:
+        chunk = sock.recv(min(msg_len - len(data), 4096))
+        if not chunk:
+            return None
+        data += chunk
+    
+    return json.loads(data.decode('utf-8'))
+
+
+def _is_server_running() -> bool:
+    """Check if the TTS server is running."""
+    if not os.path.exists(SOCKET_PATH):
+        return False
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(SOCKET_PATH)
+        _send_message(sock, {"cmd": "ping"})
+        response = _recv_message(sock)
+        sock.close()
+        return response and response.get("status") == "ok"
+    except:
+        return False
+
+
 @dataclass
 class TTSResult:
     """Result from TTS synthesis."""
@@ -60,8 +105,8 @@ class TTSResult:
 class TextToSpeech:
     """XTTS-v2 Text-to-Speech wrapper with voice cloning support.
     
-    Uses subprocess to call the TTS worker in a separate virtualenv
-    to avoid transformers version conflicts with qwen-asr.
+    Uses a persistent server process to keep the model loaded in memory.
+    This eliminates the ~30s model loading time on each synthesis.
     """
     
     def __init__(
@@ -71,6 +116,7 @@ class TextToSpeech:
     ):
         self.model_name = model_name
         self.device = device
+        self._server_process = None
         self._loaded = False
         
         # Verify TTS venv exists
@@ -82,13 +128,51 @@ class TextToSpeech:
             )
     
     def load_model(self) -> None:
-        """Pre-load check (actual loading happens in subprocess)."""
+        """Start the TTS server if not already running."""
         if self._loaded:
             return
         
-        console.print("[dim]TTS ready (XTTS-v2 via subprocess)[/dim]")
-        self._loaded = True
-        console.print("[green]✓ TTS engine ready[/green]")
+        # Check if server is already running
+        if _is_server_running():
+            console.print("[dim]TTS server already running[/dim]")
+            self._loaded = True
+            console.print("[green]✓ TTS engine ready[/green]")
+            return
+        
+        console.print("[dim]Starting TTS server (XTTS-v2)...[/dim]")
+        console.print("[dim]This will take ~30s on first load, then be instant.[/dim]")
+        
+        # Start the server in the background
+        self._server_process = subprocess.Popen(
+            [
+                str(TTS_VENV_PYTHON),
+                str(TTS_SERVER_SCRIPT),
+                "--mode", "server",
+                "--device", self.device,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,  # Detach from parent
+        )
+        
+        # Wait for server to be ready (with timeout)
+        max_wait = 120  # 2 minutes max
+        start_time = time.time()
+        
+        while time.time() - start_time < max_wait:
+            if _is_server_running():
+                self._loaded = True
+                console.print("[green]✓ TTS engine ready[/green]")
+                return
+            
+            # Check if process died
+            if self._server_process.poll() is not None:
+                stderr = self._server_process.stderr.read().decode() if self._server_process.stderr else ""
+                raise RuntimeError(f"TTS server failed to start: {stderr}")
+            
+            time.sleep(0.5)
+        
+        raise RuntimeError("TTS server failed to start within timeout")
     
     def get_language_code(self, language: str) -> str:
         """Convert language name to XTTS language code."""
@@ -141,7 +225,7 @@ class TextToSpeech:
         output_path: Optional[str] = None,
     ) -> TTSResult:
         """
-        Synthesize speech from text using subprocess.
+        Synthesize speech from text using the TTS server.
         
         Args:
             text: Text to synthesize
@@ -152,48 +236,43 @@ class TextToSpeech:
         Returns:
             TTSResult with audio data and metadata
         """
+        if not self._loaded:
+            raise RuntimeError("TTS not loaded. Call load_model() first.")
+        
         # Get language code
         lang_code = self.get_language_code(language)
-        
-        console.print(f"[dim]Synthesizing speech in {CODE_TO_LANGUAGE.get(lang_code, lang_code)}...[/dim]")
         
         # Generate output path if not provided
         if output_path is None:
             output_path = tempfile.mktemp(suffix=".wav")
         
-        # Build command
-        cmd = [
-            str(TTS_VENV_PYTHON),
-            str(TTS_WORKER_SCRIPT),
-            "--text", text,
-            "--language", lang_code,
-            "--output", output_path,
-            "--device", self.device,
-        ]
+        # Connect to server
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(120.0)  # 2 minute timeout
         
-        if speaker_wav:
-            console.print(f"[dim]Using voice clone from: {speaker_wav}[/dim]")
-            cmd.extend(["--speaker-wav", speaker_wav])
-        
-        # Run TTS subprocess
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,  # 2 minute timeout
-            )
+            sock.connect(SOCKET_PATH)
             
-            # Print TTS info messages
-            for line in result.stderr.split('\n'):
-                if line.startswith('TTS_INFO:'):
-                    console.print(f"[dim]{line.replace('TTS_INFO: ', '')}[/dim]")
+            request = {
+                "cmd": "synthesize",
+                "text": text,
+                "language": lang_code,
+                "output_path": output_path,
+            }
+            if speaker_wav:
+                request["speaker_wav"] = speaker_wav
             
-            if result.returncode != 0:
-                raise RuntimeError(f"TTS failed: {result.stderr}")
+            _send_message(sock, request)
+            response = _recv_message(sock)
             
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("TTS timed out after 2 minutes")
+            if not response:
+                raise RuntimeError("No response from TTS server")
+            
+            if not response.get("success"):
+                raise RuntimeError(f"TTS failed: {response.get('error', 'Unknown error')}")
+            
+        finally:
+            sock.close()
         
         # Load the generated audio
         import scipy.io.wavfile as wav
@@ -204,8 +283,6 @@ class TextToSpeech:
             audio = audio.astype(np.float32) / 32768.0
         elif audio.dtype == np.int32:
             audio = audio.astype(np.float32) / 2147483648.0
-        
-        console.print("[green]✓ Speech synthesized[/green]")
         
         return TTSResult(
             audio=audio,
@@ -239,6 +316,22 @@ class TextToSpeech:
         # Clean up temp file
         if result.output_path and os.path.exists(result.output_path):
             os.remove(result.output_path)
+    
+    def shutdown_server(self):
+        """Shutdown the TTS server."""
+        if _is_server_running():
+            try:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.settimeout(5.0)
+                sock.connect(SOCKET_PATH)
+                _send_message(sock, {"cmd": "shutdown"})
+                sock.close()
+            except:
+                pass
+    
+    def __del__(self):
+        """Don't shutdown server on object deletion - keep it running."""
+        pass
 
 
 def get_supported_languages() -> list[str]:
@@ -254,3 +347,17 @@ def is_language_supported(language: str) -> bool:
         lang_lower in CODE_TO_LANGUAGE or
         any(lang_lower in name for name in LANGUAGE_TO_CODE.keys())
     )
+
+
+def stop_tts_server():
+    """Stop the TTS server if running."""
+    if _is_server_running():
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5.0)
+            sock.connect(SOCKET_PATH)
+            _send_message(sock, {"cmd": "shutdown"})
+            sock.close()
+            console.print("[dim]TTS server stopped[/dim]")
+        except:
+            pass
