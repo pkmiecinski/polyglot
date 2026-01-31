@@ -21,3 +21,6 @@ torchaudio
 # CLI interface
 rich
 click
+
+# GUI (PyQt6)
+PyQt6

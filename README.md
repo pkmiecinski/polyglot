@@ -7,13 +7,43 @@ A Proof of Concept for an Edge AI translation device using:
 
 ## Features
 
+- **Modern GUI Application**: Beautiful PyQt6 interface with real-time logging
+- **Pre-loaded Models**: All models load at startup for instant translation
 - **Real-time microphone input**: Captures audio from your microphone
 - **Automatic language detection**: Identifies 52 languages and dialects
 - **Speech transcription**: High-quality ASR using Qwen3-ASR-1.7B
 - **Multilingual translation**: Translate between 200 languages with NLLB-200
 - **Text-to-Speech**: Speak translations aloud with XTTS-v2 (17 languages)
-- **Voice cloning**: Clone any voice with just a 6-second audio sample
+- **Voice cloning**: Clone your voice from the input recording
 - **Edge-ready**: Designed for local/edge deployment
+
+## Quick Start
+
+### GUI Application (Recommended)
+
+```bash
+./run_gui.sh
+```
+
+Or directly:
+```bash
+/opt/homebrew/bin/python3.10 gui.py
+```
+
+![Polyglot GUI](docs/gui-screenshot.png)
+
+The GUI features:
+- **Model Status Panel**: Shows loading progress for ASR, Translation, and TTS
+- **Timestamped Activity Log**: Real-time log with color-coded messages
+- **One-Click Recording**: Press REC, speak, and get instant translation
+- **Voice Cloning Toggle**: Clone your voice from the recording
+- **Replay Button**: Replay the last spoken translation
+
+### CLI Application
+
+```bash
+python main.py --continuous --translate English --speak --clone-voice
+```
 
 ## Supported Languages
 
@@ -123,13 +153,17 @@ python main.py --loop --continuous --translate English
 
 ```
 polyglot/
-├── main.py              # Main application entry point
+├── gui.py               # 🖥️ GUI application (PyQt6)
+├── run_gui.sh           # GUI launcher script
+├── main.py              # CLI application entry point
 ├── audio_capture.py     # Microphone audio capture utilities
 ├── transcriber.py       # Qwen3-ASR transcription wrapper
 ├── translator.py        # NLLB-200 translation wrapper
 ├── tts.py               # XTTS-v2 text-to-speech wrapper
 ├── tts_worker.py        # TTS subprocess worker (runs in .venv-tts)
 ├── .venv-tts/           # Separate venv for TTS (created during setup)
+├── output/              # Auto-saved TTS output files
+│   └── last_output.wav  # Last spoken translation (for replay)
 ├── requirements.txt     # Python dependencies
 ├── docs/                # Documentation
 │   ├── TRANSLATION_MODELS_RESEARCH.md
@@ -149,6 +183,18 @@ polyglot/
 ```
 🎤 Audio → [Qwen3-ASR] → Text + Language → [NLLB-200] → Translated Text → [XTTS-v2] → 🔊 Speech
 ```
+
+### GUI Pipeline
+
+With the GUI, all models are **pre-loaded at startup**, so the pipeline runs instantly:
+
+| Step | Time (approx) |
+|------|---------------|
+| Recording | Until silence detected |
+| ASR (Qwen3-ASR) | ~500ms |
+| Translation (NLLB-200) | ~200ms |
+| TTS (XTTS-v2) | ~2-3s |
+| **Total** | **~3-4s after speaking** |
 
 ## Models Used
 
