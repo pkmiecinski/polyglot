@@ -134,6 +134,11 @@ def print_result(text: str, language: str, translation: str = None, target_lang:
     default=None,
     help="Save spoken audio to file path"
 )
+@click.option(
+    "--clone-voice", "-C",
+    is_flag=True,
+    help="Clone voice from input recording (speaks translation in your voice)"
+)
 def main(
     model: str,
     device: str,
@@ -149,6 +154,7 @@ def main(
     speak: bool,
     voice: str,
     save_audio: str,
+    clone_voice: bool,
 ):
     """
     Polyglot - Edge AI Translation Device PoC
@@ -179,7 +185,10 @@ def main(
         # Translate and speak the result
         python main.py -c -T English --speak
         
-        # Use voice cloning (provide 6+ second sample)
+        # Clone YOUR voice from recording (speak translation in your voice!)
+        python main.py -c -T English --speak --clone-voice
+        
+        # Or use a specific voice sample for cloning
         python main.py -c -T English --speak --voice my_voice.wav
         
         # Save spoken audio to file
@@ -283,6 +292,19 @@ def main(
                     break
                 continue
             
+            # Save recording for voice cloning if requested
+            voice_sample = voice  # Use provided voice sample
+            if clone_voice and tts_engine and len(audio) >= sr * 3:  # Need at least 3 seconds
+                import tempfile
+                import scipy.io.wavfile as wav
+                voice_sample = tempfile.mktemp(suffix="_voice_sample.wav")
+                # Convert to int16 for WAV file
+                audio_int16 = (audio * 32767).astype('int16')
+                wav.write(voice_sample, sr, audio_int16)
+                console.print(f"[dim]Using your voice for cloning ({len(audio)/sr:.1f}s sample)[/dim]")
+            elif clone_voice and len(audio) < sr * 3:
+                console.print("[yellow]⚠ Recording too short for voice cloning (need 3+ seconds)[/yellow]")
+            
             # Transcribe
             try:
                 result = transcriber.transcribe(
@@ -319,7 +341,7 @@ def main(
                             tts_result = tts_engine.synthesize(
                                 text=translation_text,
                                 language=translate,
-                                speaker_wav=voice,
+                                speaker_wav=voice_sample,
                                 output_path=save_audio,
                             )
                             console.print(f"[green]✓ Audio saved to: {save_audio}[/green]")
@@ -331,8 +353,15 @@ def main(
                             tts_engine.speak(
                                 text=translation_text,
                                 language=translate,
-                                speaker_wav=voice,
+                                speaker_wav=voice_sample,
                             )
+                        
+                        # Clean up temp voice sample
+                        if clone_voice and voice_sample and voice_sample != voice:
+                            import os as os_module
+                            if os_module.path.exists(voice_sample):
+                                os_module.remove(voice_sample)
+                                
                     except Exception as e:
                         console.print(f"[yellow]⚠ TTS error: {e}[/yellow]")
                 
