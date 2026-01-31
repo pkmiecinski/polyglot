@@ -13,6 +13,7 @@ ENV/
 # Audio files
 *.wav
 *.mp3
+output/*.wav
 
 # IDE
 .idea/

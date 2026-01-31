@@ -337,24 +337,26 @@ def main(
                 # Speak the result if TTS is enabled
                 if tts_engine and translation_text:
                     try:
-                        if save_audio:
-                            tts_result = tts_engine.synthesize(
-                                text=translation_text,
-                                language=translate,
-                                speaker_wav=voice_sample,
-                                output_path=save_audio,
-                            )
-                            console.print(f"[green]✓ Audio saved to: {save_audio}[/green]")
-                            # Also play it
-                            import sounddevice as sd
-                            sd.play(tts_result.audio, tts_result.sample_rate)
-                            sd.wait()
-                        else:
-                            tts_engine.speak(
-                                text=translation_text,
-                                language=translate,
-                                speaker_wav=voice_sample,
-                            )
+                        # Always save to output folder for replay
+                        output_dir = os.path.join(os.path.dirname(__file__), "output")
+                        os.makedirs(output_dir, exist_ok=True)
+                        last_output_path = os.path.join(output_dir, "last_output.wav")
+                        
+                        # Use custom path if specified, otherwise use default
+                        output_path = save_audio if save_audio else last_output_path
+                        
+                        tts_result = tts_engine.synthesize(
+                            text=translation_text,
+                            language=translate,
+                            speaker_wav=voice_sample,
+                            output_path=output_path,
+                        )
+                        console.print(f"[green]✓ Audio saved to: {output_path}[/green]")
+                        
+                        # Play it
+                        import sounddevice as sd
+                        sd.play(tts_result.audio, tts_result.sample_rate)
+                        sd.wait()
                         
                         # Clean up temp voice sample
                         if clone_voice and voice_sample and voice_sample != voice:
