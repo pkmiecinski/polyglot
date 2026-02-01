@@ -151,13 +151,21 @@ class TextToSpeech:
             # Determine attention implementation
             attn_impl = "flash_attention_2" if self.use_flash_attention and device_map.startswith("cuda") else "sdpa"
             
-            console.print(f"[dim]Using device: {device_map}, attention: {attn_impl}[/dim]")
+            # Determine dtype - MPS works best with float32, CUDA with bfloat16
+            if device_map == "cpu":
+                model_dtype = torch.float32
+            elif device_map == "mps":
+                model_dtype = torch.float32  # MPS has issues with bfloat16
+            else:
+                model_dtype = torch.bfloat16
+            
+            console.print(f"[dim]Using device: {device_map}, dtype: {model_dtype}, attention: {attn_impl}[/dim]")
             
             # Load model
             self._model = Qwen3TTSModel.from_pretrained(
                 self.model_name,
                 device_map=device_map,
-                dtype=torch.bfloat16 if device_map != "cpu" else torch.float32,
+                dtype=model_dtype,
                 attn_implementation=attn_impl,
             )
             
@@ -296,10 +304,16 @@ class TextToSpeech:
             
             attn_impl = "flash_attention_2" if self.use_flash_attention and device_map.startswith("cuda") else "sdpa"
             
+            # Determine dtype - MPS works best with float32
+            if device_map == "cpu" or device_map == "mps":
+                model_dtype = torch.float32
+            else:
+                model_dtype = torch.bfloat16
+            
             self._voice_clone_model = Qwen3TTSModel.from_pretrained(
                 "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
                 device_map=device_map,
-                dtype=torch.bfloat16 if device_map != "cpu" else torch.float32,
+                dtype=model_dtype,
                 attn_implementation=attn_impl,
             )
         
