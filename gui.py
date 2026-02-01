@@ -48,7 +48,7 @@ from PyQt6.QtGui import (
 from audio_capture import record_audio_continuous, SAMPLE_RATE
 from transcriber import Transcriber
 from translator import Translator
-from tts import TextToSpeech, get_supported_languages as get_tts_languages, is_language_supported
+from tts_fish import FishSpeechTTS, get_supported_languages as get_tts_languages, is_language_supported
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -271,12 +271,12 @@ class ModelLoaderThread(QThread):
             self.log.emit("✓ Translation model loaded successfully", "success")
             self.progress.emit("Translation model loaded", 66)
             
-            # Load TTS server (XTTS-v2) - this takes ~30s on first load
-            self.log.emit("Starting TTS server (XTTS-v2)...", "info")
+            # Load TTS server (Fish Speech S1-mini) - powerful multilingual TTS with Thai support
+            self.log.emit("Starting TTS server (Fish Speech S1-mini)...", "info")
             self.log.emit("⏳ TTS model loading (~30s first time, then instant)", "info")
             self.progress.emit("Starting TTS server...", 70)
             
-            self.tts = TextToSpeech(device=self.device)
+            self.tts = FishSpeechTTS(device=self.device)
             self.tts.load_model()  # This starts the persistent server
             self.model_loaded.emit("TTS")
             self.log.emit("✓ TTS server running (model pre-loaded)", "success")
@@ -300,7 +300,7 @@ class ModelDownloadThread(QThread):
     
     def __init__(self, models_to_download: list = None, verbose: bool = False):
         super().__init__()
-        self.models_to_download = models_to_download or ["asr", "translation", "tts"]
+        self.models_to_download = models_to_download or ["asr", "translation", "tts_fish"]
         self.verbose = verbose
         
     def _progress_callback(self, model_name: str, downloaded: int, total: int):
@@ -410,7 +410,7 @@ class TranslationThread(QThread):
         self,
         transcriber: Transcriber,
         translator: Translator,
-        tts: TextToSpeech,
+        tts: FishSpeechTTS,
         job: TranslationJob,
     ):
         super().__init__()
@@ -840,14 +840,14 @@ class PolyglotWindow(QMainWindow):
         
         self._asr_status = StatusIndicator("ASR (Qwen3-ASR)")
         self._trans_status = StatusIndicator("Translation (NLLB-200)")
-        self._tts_status = StatusIndicator("TTS (XTTS-v2)")
+        self._tts_status = StatusIndicator("TTS (Fish Speech)")
         
         self._loading_progress = QProgressBar()
         self._loading_progress.setTextVisible(False)
         
         # Download button
         self._download_btn = QPushButton("📥 Download Models")
-        self._download_btn.setToolTip("Download models to project directory (~10.7GB)")
+        self._download_btn.setToolTip("Download models to project directory (~9.2GB)")
         self._download_btn.clicked.connect(self._download_models)
         self._download_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1052,7 +1052,7 @@ class PolyglotWindow(QMainWindow):
         else:
             self._log.log("", "debug")
             self._log.log("⚠ Some models need to be downloaded first", "warning")
-            self._log.log("Click 'Download Models' button to download (~10.7GB)", "info")
+            self._log.log("Click 'Download Models' button to download (~9.2GB)", "info")
             self._status_label.setText("Models not downloaded")
             self._asr_status.set_status("idle")
             self._trans_status.set_status("idle")
@@ -1105,7 +1105,7 @@ class PolyglotWindow(QMainWindow):
             self._asr_status.set_status("ready" if success else "error")
         elif model_key == "translation":
             self._trans_status.set_status("ready" if success else "error")
-        elif model_key == "tts":
+        elif model_key in ("tts", "tts_fish"):
             self._tts_status.set_status("ready" if success else "error")
     
     def _on_download_finished(self, success: bool, message: str):

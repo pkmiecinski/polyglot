@@ -299,6 +299,25 @@ class FishSpeechTTS:
             pass
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# PUBLIC API FUNCTIONS (for GUI compatibility)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_supported_languages() -> list:
+    """Return list of supported language names for GUI dropdown."""
+    return list(SUPPORTED_LANGUAGES.keys())
+
+
+def is_language_supported(language: str) -> bool:
+    """Check if a language is supported."""
+    lang_lower = language.lower()
+    return (
+        lang_lower in LANGUAGE_TO_CODE or
+        language in SUPPORTED_LANGUAGES or
+        language in CODE_TO_LANGUAGE
+    )
+
+
 # Convenience function
 def get_tts_engine(device: str = "auto") -> FishSpeechTTS:
     """Get a configured Fish Speech TTS engine."""
