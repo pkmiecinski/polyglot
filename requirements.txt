@@ -5,12 +5,12 @@ qwen-asr
 transformers>=4.30.0
 sentencepiece
 
-# Text-to-Speech (XTTS-v2)
-# Note: TTS runs in separate venv (.venv-tts) due to transformers conflict
-# Setup: python3.10 -m venv .venv-tts && .venv-tts/bin/pip install TTS 'torch<2.6' 'torchaudio<2.6' 'transformers<4.46'
+# Text-to-Speech (Qwen3-TTS)
+qwen-tts
 
 # Audio processing
 sounddevice
+soundfile
 numpy
 scipy
 

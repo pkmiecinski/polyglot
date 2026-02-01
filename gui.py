@@ -764,7 +764,7 @@ class PolyglotWindow(QMainWindow):
         
         self._asr_status = StatusIndicator("ASR (Qwen3-ASR)")
         self._trans_status = StatusIndicator("Translation (NLLB-200)")
-        self._tts_status = StatusIndicator("TTS (XTTS-v2)")
+        self._tts_status = StatusIndicator("TTS (Qwen3-TTS)")
         
         self._loading_progress = QProgressBar()
         self._loading_progress.setTextVisible(False)

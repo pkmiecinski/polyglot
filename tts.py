@@ -1,19 +1,21 @@
 """
-Text-to-Speech module using Coqui XTTS-v2.
+Text-to-Speech module using Qwen3-TTS.
 
-Supports 17 languages with voice cloning from a 6-second audio clip.
-Uses a persistent TTS server to avoid model reloading on each request.
+Supports 10 major languages (Chinese, English, Japanese, Korean, German,
+French, Russian, Portuguese, Spanish, Italian) with excellent voice quality.
+
+Features:
+- CustomVoice: 9 premium voices with style control
+- VoiceDesign: Create voices from natural language descriptions  
+- VoiceClone: 3-second rapid voice cloning from audio input
+
+Uses the official qwen-tts Python package.
 """
 
 import os
-import subprocess
 import tempfile
-import json
-import socket
-import struct
-import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 from pathlib import Path
 
 import numpy as np
@@ -21,76 +23,77 @@ from rich.console import Console
 
 console = Console()
 
-# Path to TTS virtualenv Python
-TTS_VENV_PYTHON = Path(__file__).parent / ".venv-tts" / "bin" / "python"
-TTS_SERVER_SCRIPT = Path(__file__).parent / "tts_server.py"
-
-# Socket path for TTS server
-SOCKET_PATH = "/tmp/polyglot_tts.sock"
-
-# XTTS-v2 supported languages
+# Qwen3-TTS supported languages
 SUPPORTED_LANGUAGES = {
-    "English": "en",
-    "Spanish": "es",
-    "French": "fr",
-    "German": "de",
-    "Italian": "it",
-    "Portuguese": "pt",
-    "Polish": "pl",
-    "Turkish": "tr",
-    "Russian": "ru",
-    "Dutch": "nl",
-    "Czech": "cs",
-    "Arabic": "ar",
-    "Chinese": "zh-cn",
-    "Japanese": "ja",
-    "Hungarian": "hu",
-    "Korean": "ko",
-    "Hindi": "hi",
+    "Chinese": "Chinese",
+    "English": "English",
+    "Japanese": "Japanese",
+    "Korean": "Korean",
+    "German": "German",
+    "French": "French",
+    "Russian": "Russian",
+    "Portuguese": "Portuguese",
+    "Spanish": "Spanish",
+    "Italian": "Italian",
 }
 
-# Reverse mapping
-LANGUAGE_TO_CODE = {k.lower(): v for k, v in SUPPORTED_LANGUAGES.items()}
-CODE_TO_LANGUAGE = {v: k for k, v in SUPPORTED_LANGUAGES.items()}
+# Map from common language names/codes to Qwen3-TTS language names
+LANGUAGE_ALIASES = {
+    # Direct matches
+    "chinese": "Chinese",
+    "english": "English",
+    "japanese": "Japanese",
+    "korean": "Korean",
+    "german": "German",
+    "french": "French",
+    "russian": "Russian",
+    "portuguese": "Portuguese",
+    "spanish": "Spanish",
+    "italian": "Italian",
+    # ISO codes
+    "zh": "Chinese",
+    "zh-cn": "Chinese",
+    "zh-tw": "Chinese",
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "de": "German",
+    "fr": "French",
+    "ru": "Russian",
+    "pt": "Portuguese",
+    "es": "Spanish",
+    "it": "Italian",
+    # ASR language names
+    "mandarin": "Chinese",
+    "cantonese": "Chinese",
+}
 
+# Available speakers in CustomVoice model
+SPEAKERS = {
+    "Vivian": {"description": "Bright, slightly edgy young female voice", "native_lang": "Chinese"},
+    "Serena": {"description": "Warm, gentle young female voice", "native_lang": "Chinese"},
+    "Uncle_Fu": {"description": "Seasoned male voice with a low, mellow timbre", "native_lang": "Chinese"},
+    "Dylan": {"description": "Youthful Beijing male voice with clear, natural timbre", "native_lang": "Chinese"},
+    "Eric": {"description": "Lively Chengdu male voice with slightly husky brightness", "native_lang": "Chinese"},
+    "Ryan": {"description": "Dynamic male voice with strong rhythmic drive", "native_lang": "English"},
+    "Aiden": {"description": "Sunny American male voice with clear midrange", "native_lang": "English"},
+    "Ono_Anna": {"description": "Playful Japanese female voice with light, nimble timbre", "native_lang": "Japanese"},
+    "Sohee": {"description": "Warm Korean female voice with rich emotion", "native_lang": "Korean"},
+}
 
-def _send_message(sock, data: dict):
-    """Send a JSON message with length prefix."""
-    msg = json.dumps(data).encode('utf-8')
-    sock.sendall(struct.pack('!I', len(msg)) + msg)
-
-
-def _recv_message(sock) -> dict:
-    """Receive a JSON message with length prefix."""
-    raw_len = sock.recv(4)
-    if not raw_len:
-        return None
-    msg_len = struct.unpack('!I', raw_len)[0]
-    
-    data = b''
-    while len(data) < msg_len:
-        chunk = sock.recv(min(msg_len - len(data), 4096))
-        if not chunk:
-            return None
-        data += chunk
-    
-    return json.loads(data.decode('utf-8'))
-
-
-def _is_server_running() -> bool:
-    """Check if the TTS server is running."""
-    if not os.path.exists(SOCKET_PATH):
-        return False
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(2.0)
-        sock.connect(SOCKET_PATH)
-        _send_message(sock, {"cmd": "ping"})
-        response = _recv_message(sock)
-        sock.close()
-        return response and response.get("status") == "ok"
-    except:
-        return False
+# Default speakers per language (for best quality)
+DEFAULT_SPEAKERS = {
+    "Chinese": "Vivian",
+    "English": "Ryan",
+    "Japanese": "Ono_Anna",
+    "Korean": "Sohee",
+    "German": "Ryan",
+    "French": "Ryan",
+    "Russian": "Ryan",
+    "Portuguese": "Ryan",
+    "Spanish": "Ryan",
+    "Italian": "Ryan",
+}
 
 
 @dataclass
@@ -103,119 +106,96 @@ class TTSResult:
 
 
 class TextToSpeech:
-    """XTTS-v2 Text-to-Speech wrapper with voice cloning support.
+    """Qwen3-TTS Text-to-Speech with voice cloning support.
     
-    Uses a persistent server process to keep the model loaded in memory.
-    This eliminates the ~30s model loading time on each synthesis.
+    Uses the 0.6B CustomVoice model for efficient inference with
+    high-quality output across 10 languages.
     """
     
     def __init__(
         self,
-        model_name: str = "tts_models/multilingual/multi-dataset/xtts_v2",
+        model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
         device: str = "auto",
+        use_flash_attention: bool = True,
     ):
         self.model_name = model_name
         self.device = device
-        self._server_process = None
+        self.use_flash_attention = use_flash_attention
+        self._model = None
         self._loaded = False
-        
-        # Verify TTS venv exists
-        if not TTS_VENV_PYTHON.exists():
-            raise RuntimeError(
-                f"TTS virtualenv not found at {TTS_VENV_PYTHON}. "
-                "Please run: python3.10 -m venv .venv-tts && "
-                ".venv-tts/bin/pip install TTS torch"
-            )
+        self._voice_clone_model = None
+        self._voice_clone_prompt = None
     
     def load_model(self) -> None:
-        """Start the TTS server if not already running."""
+        """Load the Qwen3-TTS model."""
         if self._loaded:
             return
         
-        # Check if server is already running
-        if _is_server_running():
-            console.print("[dim]TTS server already running[/dim]")
+        console.print(f"[dim]Loading Qwen3-TTS ({self.model_name})...[/dim]")
+        
+        try:
+            import torch
+            from qwen_tts import Qwen3TTSModel
+            
+            # Determine device
+            if self.device == "auto":
+                if torch.cuda.is_available():
+                    device_map = "cuda:0"
+                elif torch.backends.mps.is_available():
+                    device_map = "mps"
+                else:
+                    device_map = "cpu"
+            else:
+                device_map = self.device
+            
+            # Determine attention implementation
+            attn_impl = "flash_attention_2" if self.use_flash_attention and device_map.startswith("cuda") else "sdpa"
+            
+            console.print(f"[dim]Using device: {device_map}, attention: {attn_impl}[/dim]")
+            
+            # Load model
+            self._model = Qwen3TTSModel.from_pretrained(
+                self.model_name,
+                device_map=device_map,
+                dtype=torch.bfloat16 if device_map != "cpu" else torch.float32,
+                attn_implementation=attn_impl,
+            )
+            
             self._loaded = True
-            console.print("[green]✓ TTS engine ready[/green]")
-            return
-        
-        console.print("[dim]Starting TTS server (XTTS-v2)...[/dim]")
-        console.print("[dim]This will take ~30s on first load, then be instant.[/dim]")
-        
-        # Start the server in the background
-        self._server_process = subprocess.Popen(
-            [
-                str(TTS_VENV_PYTHON),
-                str(TTS_SERVER_SCRIPT),
-                "--mode", "server",
-                "--device", self.device,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,  # Detach from parent
-        )
-        
-        # Wait for server to be ready (with timeout)
-        max_wait = 120  # 2 minutes max
-        start_time = time.time()
-        
-        while time.time() - start_time < max_wait:
-            if _is_server_running():
-                self._loaded = True
-                console.print("[green]✓ TTS engine ready[/green]")
-                return
+            console.print("[green]✓ Qwen3-TTS engine ready[/green]")
             
-            # Check if process died
-            if self._server_process.poll() is not None:
-                stderr = self._server_process.stderr.read().decode() if self._server_process.stderr else ""
-                raise RuntimeError(f"TTS server failed to start: {stderr}")
-            
-            time.sleep(0.5)
-        
-        raise RuntimeError("TTS server failed to start within timeout")
+        except ImportError as e:
+            raise RuntimeError(
+                f"qwen-tts package not installed. Please run: pip install qwen-tts\n"
+                f"Error: {e}"
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to load Qwen3-TTS model: {e}")
     
-    def get_language_code(self, language: str) -> str:
-        """Convert language name to XTTS language code."""
-        lang_lower = language.lower()
+    def get_language(self, language: str) -> str:
+        """Convert language name/code to Qwen3-TTS language name."""
+        lang_lower = language.lower().strip()
         
-        # Direct code match
-        if lang_lower in CODE_TO_LANGUAGE:
-            return lang_lower
+        # Check aliases first
+        if lang_lower in LANGUAGE_ALIASES:
+            return LANGUAGE_ALIASES[lang_lower]
         
-        # Name to code
-        if lang_lower in LANGUAGE_TO_CODE:
-            return LANGUAGE_TO_CODE[lang_lower]
+        # Check if it's already a valid language name
+        for lang_name in SUPPORTED_LANGUAGES.keys():
+            if lang_lower == lang_name.lower():
+                return lang_name
         
-        # Partial match
-        for name, code in LANGUAGE_TO_CODE.items():
-            if lang_lower in name or name in lang_lower:
-                return code
+        # Default to English for unsupported languages
+        console.print(f"[yellow]Warning: Language '{language}' not supported by Qwen3-TTS, using English[/yellow]")
+        return "English"
+    
+    def get_speaker(self, language: str, preferred_speaker: Optional[str] = None) -> str:
+        """Get the best speaker for a language."""
+        if preferred_speaker and preferred_speaker in SPEAKERS:
+            return preferred_speaker
         
-        # Map from ASR language names to TTS codes
-        asr_to_tts = {
-            "mandarin": "zh-cn",
-            "cantonese": "zh-cn",
-            "japanese": "ja",
-            "korean": "ko",
-            "polish": "pl",
-            "german": "de",
-            "french": "fr",
-            "spanish": "es",
-            "italian": "it",
-            "portuguese": "pt",
-            "russian": "ru",
-            "turkish": "tr",
-            "dutch": "nl",
-            "czech": "cs",
-            "arabic": "ar",
-            "hungarian": "hu",
-            "hindi": "hi",
-        }
-        
-        if lang_lower in asr_to_tts:
-            return asr_to_tts[lang_lower]
-        
-        raise ValueError(f"Unsupported language: {language}. Supported: {list(SUPPORTED_LANGUAGES.keys())}")
+        lang = self.get_language(language)
+        return DEFAULT_SPEAKERS.get(lang, "Ryan")
     
     def synthesize(
         self,
@@ -223,15 +203,19 @@ class TextToSpeech:
         language: str,
         speaker_wav: Optional[str] = None,
         output_path: Optional[str] = None,
+        speaker: Optional[str] = None,
+        instruct: Optional[str] = None,
     ) -> TTSResult:
         """
-        Synthesize speech from text using the TTS server.
+        Synthesize speech from text.
         
         Args:
             text: Text to synthesize
             language: Language name or code
-            speaker_wav: Path to reference audio for voice cloning (6+ seconds)
+            speaker_wav: Path to reference audio for voice cloning (3+ seconds)
             output_path: Optional path to save the audio file
+            speaker: Speaker name (for CustomVoice model)
+            instruct: Style instruction (e.g., "Speak with excitement")
         
         Returns:
             TTSResult with audio data and metadata
@@ -239,63 +223,107 @@ class TextToSpeech:
         if not self._loaded:
             raise RuntimeError("TTS not loaded. Call load_model() first.")
         
-        # Get language code
-        lang_code = self.get_language_code(language)
+        import soundfile as sf
+        
+        # Get language
+        lang = self.get_language(language)
         
         # Generate output path if not provided
         if output_path is None:
             output_path = tempfile.mktemp(suffix=".wav")
         
-        # Connect to server
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(120.0)  # 2 minute timeout
-        
         try:
-            sock.connect(SOCKET_PATH)
+            # Check if we should use voice cloning
+            if speaker_wav and os.path.exists(speaker_wav):
+                # Load base model for cloning if not already loaded
+                audio = self._synthesize_with_clone(text, lang, speaker_wav, output_path)
+            else:
+                # Use CustomVoice synthesis
+                speaker_name = self.get_speaker(lang, speaker)
+                
+                wavs, sr = self._model.generate_custom_voice(
+                    text=text,
+                    language=lang,
+                    speaker=speaker_name,
+                    instruct=instruct or "",
+                )
+                
+                audio = wavs[0]
+                sf.write(output_path, audio, sr)
             
-            request = {
-                "cmd": "synthesize",
-                "text": text,
-                "language": lang_code,
-                "output_path": output_path,
-            }
-            if speaker_wav:
-                request["speaker_wav"] = speaker_wav
+            # Load the generated audio for consistency
+            audio_data, sample_rate = sf.read(output_path)
             
-            _send_message(sock, request)
-            response = _recv_message(sock)
+            # Convert to float32 if needed
+            if audio_data.dtype != np.float32:
+                audio_data = audio_data.astype(np.float32)
             
-            if not response:
-                raise RuntimeError("No response from TTS server")
+            return TTSResult(
+                audio=audio_data,
+                sample_rate=sample_rate,
+                language=lang,
+                output_path=output_path,
+            )
             
-            if not response.get("success"):
-                raise RuntimeError(f"TTS failed: {response.get('error', 'Unknown error')}")
-            
-        finally:
-            sock.close()
+        except Exception as e:
+            raise RuntimeError(f"TTS synthesis failed: {e}")
+    
+    def _synthesize_with_clone(
+        self,
+        text: str,
+        language: str,
+        speaker_wav: str,
+        output_path: str,
+    ) -> np.ndarray:
+        """Synthesize speech using voice cloning from reference audio."""
+        import torch
+        import soundfile as sf
+        from qwen_tts import Qwen3TTSModel
         
-        # Load the generated audio
-        import scipy.io.wavfile as wav
-        sample_rate, audio = wav.read(output_path)
+        # Load base model for cloning (separate from CustomVoice)
+        if self._voice_clone_model is None:
+            console.print("[dim]Loading voice clone model...[/dim]")
+            
+            if self.device == "auto":
+                if torch.cuda.is_available():
+                    device_map = "cuda:0"
+                elif torch.backends.mps.is_available():
+                    device_map = "mps"
+                else:
+                    device_map = "cpu"
+            else:
+                device_map = self.device
+            
+            attn_impl = "flash_attention_2" if self.use_flash_attention and device_map.startswith("cuda") else "sdpa"
+            
+            self._voice_clone_model = Qwen3TTSModel.from_pretrained(
+                "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                device_map=device_map,
+                dtype=torch.bfloat16 if device_map != "cpu" else torch.float32,
+                attn_implementation=attn_impl,
+            )
         
-        # Convert to float32 normalized
-        if audio.dtype == np.int16:
-            audio = audio.astype(np.float32) / 32768.0
-        elif audio.dtype == np.int32:
-            audio = audio.astype(np.float32) / 2147483648.0
-        
-        return TTSResult(
-            audio=audio,
-            sample_rate=sample_rate,
-            language=lang_code,
-            output_path=output_path,
+        # Get transcript of reference audio (optional, improves quality)
+        # For simplicity, we use x_vector_only_mode which doesn't require transcript
+        wavs, sr = self._voice_clone_model.generate_voice_clone(
+            text=text,
+            language=language,
+            ref_audio=speaker_wav,
+            ref_text=None,  # Not required with x_vector_only_mode
+            x_vector_only_mode=True,
         )
+        
+        audio = wavs[0]
+        sf.write(output_path, audio, sr)
+        
+        return audio
     
     def speak(
         self,
         text: str,
         language: str,
         speaker_wav: Optional[str] = None,
+        speaker: Optional[str] = None,
     ) -> None:
         """
         Synthesize and play speech immediately.
@@ -304,10 +332,11 @@ class TextToSpeech:
             text: Text to speak
             language: Language name or code
             speaker_wav: Optional reference audio for voice cloning
+            speaker: Speaker name (for CustomVoice model)
         """
         import sounddevice as sd
         
-        result = self.synthesize(text, language, speaker_wav)
+        result = self.synthesize(text, language, speaker_wav, speaker=speaker)
         
         console.print("[dim]Playing audio...[/dim]")
         sd.play(result.audio, result.sample_rate)
@@ -317,21 +346,13 @@ class TextToSpeech:
         if result.output_path and os.path.exists(result.output_path):
             os.remove(result.output_path)
     
-    def shutdown_server(self):
-        """Shutdown the TTS server."""
-        if _is_server_running():
-            try:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                sock.settimeout(5.0)
-                sock.connect(SOCKET_PATH)
-                _send_message(sock, {"cmd": "shutdown"})
-                sock.close()
-            except:
-                pass
+    def get_supported_speakers(self) -> List[str]:
+        """Get list of available speakers."""
+        return list(SPEAKERS.keys())
     
-    def __del__(self):
-        """Don't shutdown server on object deletion - keep it running."""
-        pass
+    def get_speaker_info(self, speaker: str) -> Optional[dict]:
+        """Get information about a speaker."""
+        return SPEAKERS.get(speaker)
 
 
 def get_supported_languages() -> list[str]:
@@ -341,23 +362,11 @@ def get_supported_languages() -> list[str]:
 
 def is_language_supported(language: str) -> bool:
     """Check if a language is supported for TTS."""
-    lang_lower = language.lower()
-    return (
-        lang_lower in LANGUAGE_TO_CODE or
-        lang_lower in CODE_TO_LANGUAGE or
-        any(lang_lower in name for name in LANGUAGE_TO_CODE.keys())
-    )
-
-
-def stop_tts_server():
-    """Stop the TTS server if running."""
-    if _is_server_running():
-        try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(5.0)
-            sock.connect(SOCKET_PATH)
-            _send_message(sock, {"cmd": "shutdown"})
-            sock.close()
-            console.print("[dim]TTS server stopped[/dim]")
-        except:
-            pass
+    lang_lower = language.lower().strip()
+    
+    # Check aliases
+    if lang_lower in LANGUAGE_ALIASES:
+        return True
+    
+    # Check language names
+    return any(lang_lower == name.lower() for name in SUPPORTED_LANGUAGES.keys())
