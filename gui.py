@@ -48,7 +48,7 @@ from PyQt6.QtGui import (
 from audio_capture import record_audio_continuous, SAMPLE_RATE
 from transcriber import Transcriber
 from translator import Translator
-from tts_fish import FishSpeechTTS, get_supported_languages as get_tts_languages, is_language_supported
+from tts_edge import EdgeTTS as FishSpeechTTS, get_supported_languages as get_tts_languages, is_language_supported
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -271,16 +271,15 @@ class ModelLoaderThread(QThread):
             self.log.emit("✓ Translation model loaded successfully", "success")
             self.progress.emit("Translation model loaded", 66)
             
-            # Load TTS server (Fish Speech 1.5) - powerful multilingual TTS with Thai support
-            self.log.emit("Starting TTS server (Fish Speech 1.5)...", "info")
-            self.log.emit("⏳ TTS model loading (~30s first time, then instant)", "info")
-            self.progress.emit("Starting TTS server...", 70)
+            # Load TTS (Edge TTS) - fast multilingual TTS with Thai support
+            self.log.emit("Starting Edge TTS...", "info")
+            self.progress.emit("Starting TTS...", 70)
             
             self.tts = FishSpeechTTS(device=self.device)
-            self.tts.load_model()  # This starts the persistent server
+            self.tts.load_model()  # Instant for Edge TTS
             self.model_loaded.emit("TTS")
-            self.log.emit("✓ TTS server running (model pre-loaded)", "success")
-            self.progress.emit("TTS server ready", 100)
+            self.log.emit("✓ Edge TTS ready (130+ languages)", "success")
+            self.progress.emit("TTS ready", 100)
             
             self.log.emit("All models loaded! Ready for translation.", "success")
             self.finished.emit(True, "All models loaded successfully")
@@ -300,7 +299,7 @@ class ModelDownloadThread(QThread):
     
     def __init__(self, models_to_download: list = None, verbose: bool = False):
         super().__init__()
-        self.models_to_download = models_to_download or ["asr", "translation", "tts_fish"]
+        self.models_to_download = models_to_download or ["asr", "translation"]  # Edge TTS doesn't need downloads
         self.verbose = verbose
         
     def _progress_callback(self, model_name: str, downloaded: int, total: int):
@@ -840,7 +839,7 @@ class PolyglotWindow(QMainWindow):
         
         self._asr_status = StatusIndicator("ASR (Qwen3-ASR)")
         self._trans_status = StatusIndicator("Translation (NLLB-200)")
-        self._tts_status = StatusIndicator("TTS (Fish Speech)")
+        self._tts_status = StatusIndicator("TTS (Edge)")
         
         self._loading_progress = QProgressBar()
         self._loading_progress.setTextVisible(False)
