@@ -249,13 +249,14 @@ class Translator:
         forced_bos_token_id = self.tokenizer.convert_tokens_to_ids(tgt_code)
         
         # Generate translation
+        # Note: Using num_beams=1 (greedy) because beam search can truncate output
+        # for certain language pairs (e.g., Polish to Russian)
         with torch.no_grad():
             translated_tokens = self.model.generate(
                 **inputs,
                 forced_bos_token_id=forced_bos_token_id,
-                max_length=self.max_length,
-                num_beams=num_beams,
-                early_stopping=True
+                max_new_tokens=self.max_length,
+                num_beams=1,  # Greedy decoding - beam search truncates some languages
             )
         
         # Decode
