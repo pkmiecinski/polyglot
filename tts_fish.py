@@ -1,5 +1,5 @@
 """
-Text-to-Speech module using Fish Speech (OpenAudio S1-mini).
+Text-to-Speech module using Fish Speech 1.5.
 
 Fish Speech is a state-of-the-art TTS model supporting:
 - 13+ languages with high quality

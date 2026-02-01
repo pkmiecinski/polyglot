@@ -66,10 +66,10 @@ MODELS: Dict[str, ModelInfo] = {
         description="Text-to-speech with voice cloning (17 languages)"
     ),
     "tts_fish": ModelInfo(
-        name="Fish Speech S1-mini",
-        model_id="fishaudio/openaudio-s1-mini",
+        name="Fish Speech 1.5",
+        model_id="fishaudio/fish-speech-1.5",
         model_type=ModelType.TTS_FISH,
-        size_gb=2.5,
+        size_gb=2.0,
         description="State-of-the-art TTS with emotion control (13+ languages incl. Thai)"
     ),
 }
@@ -145,11 +145,9 @@ def is_model_downloaded(model_key: str) -> bool:
         return model_dir.exists() and (model_dir / "model.pth").exists()
     
     elif model.model_type == ModelType.TTS_FISH:
-        # Check for Fish Speech model
-        model_dir = FISH_CACHE_DIR / f"models--{model.model_id.replace('/', '--')}"
-        if not model_dir.exists():
-            model_dir = FISH_CACHE_DIR / "hub" / f"models--{model.model_id.replace('/', '--')}"
-        return model_dir.exists() and any(model_dir.glob("**/*.safetensors"))
+        # Check for Fish Speech model - we download to a named directory
+        model_dir = FISH_CACHE_DIR / model.model_id.replace("/", "--")
+        return model_dir.exists() and (model_dir / "model.pth").exists()
     
     return False
 
@@ -169,9 +167,7 @@ def get_model_size_on_disk(model_key: str) -> float:
     elif model.model_type == ModelType.TTS:
         model_dir = TTS_CACHE_DIR / "tts_models--multilingual--multi-dataset--xtts_v2"
     elif model.model_type == ModelType.TTS_FISH:
-        model_dir = FISH_CACHE_DIR / f"models--{model.model_id.replace('/', '--')}"
-        if not model_dir.exists():
-            model_dir = FISH_CACHE_DIR / "hub" / f"models--{model.model_id.replace('/', '--')}"
+        model_dir = FISH_CACHE_DIR / model.model_id.replace("/", "--")
     else:
         return 0.0
     
@@ -321,12 +317,14 @@ def _download_fish_speech_model(model: ModelInfo, progress_callback: Optional[Ca
     
     if verbose:
         print(f"[ModelManager] Downloading {model.model_id} from HuggingFace...")
-        print("[ModelManager] This may take a while (~2.5GB)...")
+        print("[ModelManager] This may take a while (~2GB)...")
+    
+    # Download to a named directory inside FISH_CACHE_DIR
+    local_dir = FISH_CACHE_DIR / model.model_id.replace("/", "--")
     
     snapshot_download(
         repo_id=model.model_id,
-        cache_dir=str(FISH_CACHE_DIR),
-        local_dir_use_symlinks=False,
+        local_dir=str(local_dir),
     )
     
     if verbose:
@@ -349,9 +347,7 @@ def delete_model(model_key: str, verbose: bool = False) -> bool:
     elif model.model_type == ModelType.TTS:
         model_dir = TTS_CACHE_DIR / "tts_models--multilingual--multi-dataset--xtts_v2"
     elif model.model_type == ModelType.TTS_FISH:
-        model_dir = FISH_CACHE_DIR / f"models--{model.model_id.replace('/', '--')}"
-        if not model_dir.exists():
-            model_dir = FISH_CACHE_DIR / "hub" / f"models--{model.model_id.replace('/', '--')}"
+        model_dir = FISH_CACHE_DIR / model.model_id.replace("/", "--")
     else:
         return False
     

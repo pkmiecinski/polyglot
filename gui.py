@@ -271,8 +271,8 @@ class ModelLoaderThread(QThread):
             self.log.emit("✓ Translation model loaded successfully", "success")
             self.progress.emit("Translation model loaded", 66)
             
-            # Load TTS server (Fish Speech S1-mini) - powerful multilingual TTS with Thai support
-            self.log.emit("Starting TTS server (Fish Speech S1-mini)...", "info")
+            # Load TTS server (Fish Speech 1.5) - powerful multilingual TTS with Thai support
+            self.log.emit("Starting TTS server (Fish Speech 1.5)...", "info")
             self.log.emit("⏳ TTS model loading (~30s first time, then instant)", "info")
             self.progress.emit("Starting TTS server...", 70)
             

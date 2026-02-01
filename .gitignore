@@ -34,3 +34,4 @@ models/
 # Temp files
 *.tmp
 *.temp
+.venv-fish/

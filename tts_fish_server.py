@@ -3,7 +3,7 @@
 Persistent Fish Speech TTS server that keeps the model loaded in memory.
 Communicates via Unix socket for fast synthesis requests.
 
-Uses OpenAudio S1-mini for high-quality multilingual TTS.
+Uses Fish Speech 1.5 for high-quality multilingual TTS.
 """
 
 import argparse
@@ -77,9 +77,9 @@ class FishSpeechServer:
         
         print(f"[Fish Speech Server] Loading model on {device}...", file=sys.stderr)
         
-        # Load OpenAudio S1-mini
+        # Load Fish Speech 1.5
         self.model = TTSInference(
-            model_name="fishaudio/openaudio-s1-mini",
+            model_name="fishaudio/fish-speech-1.5",
             device=device,
         )
         
