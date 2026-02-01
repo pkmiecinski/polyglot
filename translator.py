@@ -3,6 +3,9 @@ NLLB-200 Translation module for multilingual text translation.
 Optimized for edge deployment with support for 200 languages.
 """
 
+# Import model_manager first to set up cache directories BEFORE importing transformers
+import model_manager
+
 import torch
 from typing import Optional, Dict, List
 from dataclasses import dataclass

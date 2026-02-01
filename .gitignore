@@ -25,6 +25,9 @@ output/*.wav
 .DS_Store
 Thumbs.db
 
+# Models directory (large AI models ~10GB)
+models/
+
 # Models cache (optional - large)
 # ~/.cache/huggingface/
 

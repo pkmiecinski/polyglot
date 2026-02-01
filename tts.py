@@ -25,6 +25,10 @@ console = Console()
 TTS_VENV_PYTHON = Path(__file__).parent / ".venv-tts" / "bin" / "python"
 TTS_SERVER_SCRIPT = Path(__file__).parent / "tts_server.py"
 
+# TTS cache directory (within project)
+PROJECT_ROOT = Path(__file__).parent.absolute()
+TTS_CACHE_DIR = PROJECT_ROOT / "models" / "tts"
+
 # Socket path for TTS server
 SOCKET_PATH = "/tmp/polyglot_tts.sock"
 
@@ -143,6 +147,11 @@ class TextToSpeech:
         console.print("[dim]This will take ~30s on first load, then be instant.[/dim]")
         
         # Start the server in the background
+        # Pass TTS_HOME to use project-local model storage
+        env = os.environ.copy()
+        env["TTS_HOME"] = str(TTS_CACHE_DIR)
+        env["COQUI_TOS_AGREED"] = "1"
+        
         self._server_process = subprocess.Popen(
             [
                 str(TTS_VENV_PYTHON),
@@ -153,6 +162,7 @@ class TextToSpeech:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,  # Detach from parent
+            env=env,
         )
         
         # Wait for server to be ready (with timeout)

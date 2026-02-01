@@ -2,6 +2,9 @@
 Qwen3-ASR transcription wrapper for speech-to-text and language detection.
 """
 
+# Import model_manager first to set up cache directories BEFORE importing transformers
+import model_manager
+
 import torch
 import numpy as np
 from typing import Optional, Tuple, List

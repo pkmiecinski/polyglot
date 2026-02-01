@@ -17,6 +17,72 @@ import signal
 import threading
 from pathlib import Path
 
+# Set up TTS cache directory BEFORE importing TTS
+PROJECT_ROOT = Path(__file__).parent.absolute()
+TTS_CACHE_DIR = PROJECT_ROOT / "models" / "tts"
+TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["TTS_HOME"] = str(TTS_CACHE_DIR)
+os.environ["COQUI_TOS_AGREED"] = "1"
+
+import re
+
+
+def split_text_into_chunks(text: str, max_chars: int = 250) -> list:
+    """
+    Split text into chunks suitable for XTTS-v2.
+    
+    XTTS-v2 works best with shorter segments (~250 chars).
+    We split on sentence boundaries to maintain natural prosody.
+    """
+    if len(text) <= max_chars:
+        return [text]
+    
+    # Split by sentence endings
+    sentence_pattern = r'(?<=[.!?])\s+'
+    sentences = re.split(sentence_pattern, text)
+    
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+            
+        # If single sentence is too long, split by commas/semicolons
+        if len(sentence) > max_chars:
+            # Split long sentences by clauses
+            clause_pattern = r'(?<=[,;:])\s+'
+            clauses = re.split(clause_pattern, sentence)
+            
+            for clause in clauses:
+                clause = clause.strip()
+                if not clause:
+                    continue
+                    
+                if len(current_chunk) + len(clause) + 1 <= max_chars:
+                    current_chunk = f"{current_chunk} {clause}".strip()
+                else:
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                    # If clause itself is too long, just use it anyway
+                    current_chunk = clause
+        else:
+            # Normal sentence
+            if len(current_chunk) + len(sentence) + 1 <= max_chars:
+                current_chunk = f"{current_chunk} {sentence}".strip()
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = sentence
+    
+    # Add remaining chunk
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks if chunks else [text]
+
+
 # Socket path
 SOCKET_PATH = "/tmp/polyglot_tts.sock"
 LOCK_FILE = "/tmp/polyglot_tts.lock"
@@ -70,33 +136,95 @@ class TTSServer:
         print(f"[TTS Server] Model loaded and ready!", file=sys.stderr)
         
     def synthesize(self, text: str, language: str, speaker_wav: str = None, output_path: str = None) -> dict:
-        """Synthesize speech from text."""
+        """Synthesize speech from text with automatic chunking for long texts."""
         if self.tts is None:
             return {"success": False, "error": "Model not loaded"}
         
         try:
+            import numpy as np
+            import scipy.io.wavfile as wavfile
+            
             if output_path is None:
                 output_path = tempfile.mktemp(suffix=".wav")
             
-            if speaker_wav and os.path.exists(speaker_wav):
-                self.tts.tts_to_file(
-                    text=text,
-                    file_path=output_path,
-                    speaker_wav=speaker_wav,
-                    language=language,
-                )
+            # Split text into chunks for XTTS-v2 (max ~250 chars per chunk)
+            chunks = split_text_into_chunks(text, max_chars=250)
+            
+            if len(chunks) == 1:
+                # Single chunk - synthesize directly
+                if speaker_wav and os.path.exists(speaker_wav):
+                    self.tts.tts_to_file(
+                        text=text,
+                        file_path=output_path,
+                        speaker_wav=speaker_wav,
+                        language=language,
+                    )
+                else:
+                    wav_data = self.tts.synthesizer.tts(
+                        text=text,
+                        language_name=language,
+                        speaker_name="Claribel Dervla",
+                    )
+                    self.tts.synthesizer.save_wav(wav_data, output_path)
             else:
-                # Use default speaker
-                wav = self.tts.synthesizer.tts(
-                    text=text,
-                    language_name=language,
-                    speaker_name="Claribel Dervla",
-                )
-                self.tts.synthesizer.save_wav(wav, output_path)
+                # Multiple chunks - synthesize each and concatenate
+                print(f"[TTS] Synthesizing {len(chunks)} chunks...", file=sys.stderr)
+                all_audio = []
+                sample_rate = None
+                
+                for i, chunk in enumerate(chunks):
+                    print(f"[TTS] Chunk {i+1}/{len(chunks)}: {chunk[:50]}...", file=sys.stderr)
+                    
+                    if speaker_wav and os.path.exists(speaker_wav):
+                        # Synthesize to temp file
+                        temp_path = tempfile.mktemp(suffix=".wav")
+                        self.tts.tts_to_file(
+                            text=chunk,
+                            file_path=temp_path,
+                            speaker_wav=speaker_wav,
+                            language=language,
+                        )
+                        sr, audio = wavfile.read(temp_path)
+                        os.remove(temp_path)
+                    else:
+                        audio = self.tts.synthesizer.tts(
+                            text=chunk,
+                            language_name=language,
+                            speaker_name="Claribel Dervla",
+                        )
+                        sr = self.tts.synthesizer.output_sample_rate
+                    
+                    if sample_rate is None:
+                        sample_rate = sr
+                    
+                    # Convert to numpy array if needed
+                    if not isinstance(audio, np.ndarray):
+                        audio = np.array(audio)
+                    
+                    all_audio.append(audio)
+                    
+                    # Add small pause between chunks (0.15 seconds of silence)
+                    if i < len(chunks) - 1:
+                        pause = np.zeros(int(sample_rate * 0.15), dtype=np.float32)
+                        all_audio.append(pause)
+                
+                # Concatenate all audio
+                combined_audio = np.concatenate(all_audio)
+                
+                # Save combined audio
+                if combined_audio.dtype == np.float32 or combined_audio.dtype == np.float64:
+                    # Normalize and convert to int16
+                    combined_audio = np.clip(combined_audio, -1.0, 1.0)
+                    combined_audio = (combined_audio * 32767).astype(np.int16)
+                
+                wavfile.write(output_path, sample_rate, combined_audio)
+                print(f"[TTS] Combined audio saved to {output_path}", file=sys.stderr)
             
             return {"success": True, "output": output_path}
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
     
     def handle_client(self, conn):

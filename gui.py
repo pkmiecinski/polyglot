@@ -12,6 +12,9 @@ A PyQt6-based interface for real-time speech translation with:
 import sys
 import os
 
+# Import model_manager FIRST to set up cache directories before any ML imports
+import model_manager
+
 # Fix Qt/PyTorch threading issues on macOS
 os.environ["QT_MAC_WANTS_LAYER"] = "1"
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
@@ -232,9 +235,10 @@ class ModelLoaderThread(QThread):
     finished = pyqtSignal(bool, str) # success, message
     log = pyqtSignal(str, str)       # message, level
     
-    def __init__(self, device: str = "auto"):
+    def __init__(self, device: str = "auto", verbose: bool = False):
         super().__init__()
         self.device = device
+        self.verbose = verbose
         self.transcriber = None
         self.translator = None
         self.tts = None
@@ -283,6 +287,76 @@ class ModelLoaderThread(QThread):
             
         except Exception as e:
             self.log.emit(f"✗ Error loading models: {str(e)}", "error")
+            self.finished.emit(False, str(e))
+
+
+class ModelDownloadThread(QThread):
+    """Background thread for downloading AI models."""
+    
+    progress = pyqtSignal(str, int, int)  # model_name, downloaded_mb, total_mb
+    model_finished = pyqtSignal(str, bool, str)  # model_name, success, message
+    finished = pyqtSignal(bool, str)  # success, message
+    log = pyqtSignal(str, str)  # message, level
+    
+    def __init__(self, models_to_download: list = None, verbose: bool = False):
+        super().__init__()
+        self.models_to_download = models_to_download or ["asr", "translation", "tts"]
+        self.verbose = verbose
+        
+    def _progress_callback(self, model_name: str, downloaded: int, total: int):
+        """Callback for download progress."""
+        downloaded_mb = downloaded // (1024 * 1024)
+        total_mb = total // (1024 * 1024) if total > 0 else 0
+        self.progress.emit(model_name, downloaded_mb, total_mb)
+        
+        if self.verbose and total > 0:
+            pct = (downloaded / total) * 100
+            self.log.emit(f"  [{model_name}] {downloaded_mb}MB / {total_mb}MB ({pct:.1f}%)", "debug")
+    
+    def run(self):
+        try:
+            self.log.emit("Starting model download...", "info")
+            self.log.emit(f"Models will be stored in: {model_manager.MODELS_DIR}", "info")
+            
+            all_success = True
+            
+            for model_key in self.models_to_download:
+                model_info = model_manager.MODELS.get(model_key)
+                if not model_info:
+                    continue
+                    
+                self.log.emit(f"", "debug")
+                self.log.emit(f"📥 Downloading {model_info.name}...", "info")
+                self.log.emit(f"   Size: ~{model_info.size_gb}GB", "debug")
+                
+                try:
+                    success = model_manager.download_model(
+                        model_key,
+                        progress_callback=lambda d, t, m=model_key: self._progress_callback(m, d, t)
+                    )
+                    
+                    if success:
+                        self.log.emit(f"✓ {model_info.name} downloaded successfully", "success")
+                        self.model_finished.emit(model_key, True, "Downloaded")
+                    else:
+                        self.log.emit(f"✗ {model_info.name} download failed", "error")
+                        self.model_finished.emit(model_key, False, "Download failed")
+                        all_success = False
+                        
+                except Exception as e:
+                    self.log.emit(f"✗ Error downloading {model_info.name}: {str(e)}", "error")
+                    self.model_finished.emit(model_key, False, str(e))
+                    all_success = False
+            
+            if all_success:
+                self.log.emit("", "debug")
+                self.log.emit("✓ All models downloaded successfully!", "success")
+                self.finished.emit(True, "All models downloaded")
+            else:
+                self.finished.emit(False, "Some models failed to download")
+                
+        except Exception as e:
+            self.log.emit(f"✗ Download error: {str(e)}", "error")
             self.finished.emit(False, str(e))
 
 
@@ -700,12 +774,14 @@ class PolyglotWindow(QMainWindow):
         self._transcriber = None
         self._translator = None
         self._tts = None
+        self._verbose = False  # Verbose logging flag
         
         self._recording_thread = None
         self._translation_thread = None
+        self._download_thread = None
         
         self._setup_ui()
-        self._start_model_loading()
+        self._check_models_and_start()
         
     def _setup_ui(self):
         """Initialize the user interface."""
@@ -769,10 +845,39 @@ class PolyglotWindow(QMainWindow):
         self._loading_progress = QProgressBar()
         self._loading_progress.setTextVisible(False)
         
+        # Download button
+        self._download_btn = QPushButton("📥 Download Models")
+        self._download_btn.setToolTip("Download models to project directory (~10.7GB)")
+        self._download_btn.clicked.connect(self._download_models)
+        self._download_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 8px;
+                padding: 10px 16px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['accent']};
+                border-color: {COLORS['accent']};
+            }}
+            QPushButton:disabled {{
+                background-color: {COLORS['bg_dark']};
+                color: {COLORS['text_dim']};
+            }}
+        """)
+        
+        # Download progress label
+        self._download_progress_label = QLabel("")
+        self._download_progress_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        self._download_progress_label.setVisible(False)
+        
         status_layout.addWidget(self._asr_status)
         status_layout.addWidget(self._trans_status)
         status_layout.addWidget(self._tts_status)
         status_layout.addWidget(self._loading_progress)
+        status_layout.addWidget(self._download_btn)
+        status_layout.addWidget(self._download_progress_label)
         
         # Settings group
         settings_group = QGroupBox("SETTINGS")
@@ -871,6 +976,15 @@ class PolyglotWindow(QMainWindow):
         # Log widget
         self._log = LogWidget()
         
+        # Bottom controls
+        controls_layout = QHBoxLayout()
+        
+        # Verbose checkbox
+        self._verbose_checkbox = QCheckBox("Verbose logging")
+        self._verbose_checkbox.setToolTip("Show detailed debug messages")
+        self._verbose_checkbox.stateChanged.connect(self._toggle_verbose)
+        self._verbose_checkbox.setStyleSheet(f"font-size: 12px; color: {COLORS['text_dim']};")
+        
         # Clear button
         clear_btn = QPushButton("Clear Log")
         clear_btn.clicked.connect(self._log.clear)
@@ -889,24 +1003,136 @@ class PolyglotWindow(QMainWindow):
             }}
         """)
         
+        controls_layout.addWidget(self._verbose_checkbox)
+        controls_layout.addStretch()
+        controls_layout.addWidget(clear_btn)
+        
         layout.addWidget(log_header)
         layout.addWidget(self._log, stretch=1)
-        layout.addWidget(clear_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(controls_layout)
         
         return panel
-        
-    def _start_model_loading(self):
-        """Start loading models in background."""
+    
+    def _toggle_verbose(self, state: int):
+        """Toggle verbose logging mode."""
+        self._verbose = state == Qt.CheckState.Checked.value
+        if self._verbose:
+            self._log.log("Verbose logging enabled", "debug")
+        else:
+            self._log.log("Verbose logging disabled", "info")
+    
+    def _check_models_and_start(self):
+        """Check model status and either download or load them."""
         self._state = AppState.LOADING_MODELS
         self._log.log("═" * 50, "debug")
         self._log.log(f"Starting {APP_NAME} v{APP_VERSION}", "info")
         self._log.log("═" * 50, "debug")
         
+        # Check which models are downloaded
+        status = model_manager.get_all_models_status()
+        
+        self._log.log(f"Model storage: {model_manager.MODELS_DIR}", "info")
+        
+        all_downloaded = True
+        missing_models = []
+        
+        for model_key, info in status.items():
+            if info.downloaded:
+                self._log.log(f"✓ {info.name} - Downloaded", "success")
+            else:
+                self._log.log(f"○ {info.name} - Not downloaded (~{info.size_gb}GB)", "warning")
+                all_downloaded = False
+                missing_models.append(model_key)
+        
+        if all_downloaded:
+            self._log.log("All models present. Starting load...", "info")
+            self._download_btn.setText("✓ Models Downloaded")
+            self._download_btn.setEnabled(False)
+            self._start_model_loading()
+        else:
+            self._log.log("", "debug")
+            self._log.log("⚠ Some models need to be downloaded first", "warning")
+            self._log.log("Click 'Download Models' button to download (~10.7GB)", "info")
+            self._status_label.setText("Models not downloaded")
+            self._asr_status.set_status("idle")
+            self._trans_status.set_status("idle")
+            self._tts_status.set_status("idle")
+            self._loading_progress.setVisible(False)
+            
+            # Update download button to show missing count
+            self._download_btn.setText(f"📥 Download Models ({len(missing_models)} missing)")
+    
+    def _download_models(self):
+        """Start downloading missing models."""
+        # Get missing models
+        status = model_manager.get_all_models_status()
+        missing_models = [k for k, v in status.items() if not v.downloaded]
+        
+        if not missing_models:
+            self._log.log("All models already downloaded!", "success")
+            return
+        
+        self._download_btn.setEnabled(False)
+        self._download_btn.setText("Downloading...")
+        self._download_progress_label.setVisible(True)
+        
         self._asr_status.set_status("loading")
         self._trans_status.set_status("loading")
         self._tts_status.set_status("loading")
         
-        self._loader_thread = ModelLoaderThread()
+        self._download_thread = ModelDownloadThread(
+            models_to_download=missing_models,
+            verbose=self._verbose
+        )
+        self._download_thread.progress.connect(self._on_download_progress)
+        self._download_thread.model_finished.connect(self._on_model_download_finished)
+        self._download_thread.finished.connect(self._on_download_finished)
+        self._download_thread.log.connect(self._log.log)
+        self._download_thread.start()
+    
+    def _on_download_progress(self, model_name: str, downloaded_mb: int, total_mb: int):
+        """Handle download progress updates."""
+        if total_mb > 0:
+            pct = (downloaded_mb / total_mb) * 100
+            self._download_progress_label.setText(
+                f"{model_name}: {downloaded_mb}MB / {total_mb}MB ({pct:.0f}%)"
+            )
+            self._status_label.setText(f"Downloading {model_name}...")
+    
+    def _on_model_download_finished(self, model_key: str, success: bool, message: str):
+        """Handle individual model download completion."""
+        if model_key == "asr":
+            self._asr_status.set_status("ready" if success else "error")
+        elif model_key == "translation":
+            self._trans_status.set_status("ready" if success else "error")
+        elif model_key == "tts":
+            self._tts_status.set_status("ready" if success else "error")
+    
+    def _on_download_finished(self, success: bool, message: str):
+        """Handle download completion."""
+        self._download_progress_label.setVisible(False)
+        
+        if success:
+            self._download_btn.setText("✓ Models Downloaded")
+            self._download_btn.setEnabled(False)
+            self._log.log("", "debug")
+            self._log.log("Starting model load...", "info")
+            self._start_model_loading()
+        else:
+            self._download_btn.setText("📥 Retry Download")
+            self._download_btn.setEnabled(True)
+            self._status_label.setText("Download failed - click to retry")
+        
+    def _start_model_loading(self):
+        """Start loading models in background."""
+        self._state = AppState.LOADING_MODELS
+        
+        self._asr_status.set_status("loading")
+        self._trans_status.set_status("loading")
+        self._tts_status.set_status("loading")
+        self._loading_progress.setVisible(True)
+        
+        self._loader_thread = ModelLoaderThread(verbose=self._verbose)
         self._loader_thread.progress.connect(self._on_load_progress)
         self._loader_thread.model_loaded.connect(self._on_model_loaded)
         self._loader_thread.finished.connect(self._on_loading_finished)
@@ -1053,6 +1279,8 @@ class PolyglotWindow(QMainWindow):
             self._recording_thread.terminate()
         if self._translation_thread and self._translation_thread.isRunning():
             self._translation_thread.terminate()
+        if self._download_thread and self._download_thread.isRunning():
+            self._download_thread.terminate()
             
         # Clean up models
         if self._transcriber:
