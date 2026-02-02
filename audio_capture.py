@@ -83,6 +83,159 @@ def record_audio(
     return audio_data, sample_rate
 
 
+class AudioRecorder:
+    """
+    Simple audio recorder with manual start/stop control.
+    """
+    
+    def __init__(
+        self,
+        sample_rate: int = SAMPLE_RATE,
+        device: Optional[int] = None,
+        chunk_duration: float = 0.1,
+        max_duration: float = 60.0,
+    ):
+        import threading
+        import queue
+        
+        self.sample_rate = sample_rate
+        self.device = device if device is not None else get_default_input_device()
+        self.chunk_duration = chunk_duration
+        self.max_duration = max_duration
+        
+        self._audio_queue = queue.Queue()
+        self._stop_flag = threading.Event()
+        self._all_audio = []
+        self._stream = None
+        self._is_recording = False
+        
+    def _audio_callback(self, indata, frames, time, status):
+        """Callback for audio stream."""
+        if not self._stop_flag.is_set():
+            self._audio_queue.put(indata.copy())
+    
+    def start(self):
+        """Start recording."""
+        import queue
+        
+        self._stop_flag.clear()
+        self._all_audio = []
+        self._audio_queue = queue.Queue()
+        self._is_recording = True
+        
+        chunk_samples = int(self.chunk_duration * self.sample_rate)
+        
+        self._stream = sd.InputStream(
+            samplerate=self.sample_rate,
+            channels=1,
+            dtype=np.float32,
+            device=self.device,
+            blocksize=chunk_samples,
+            callback=self._audio_callback
+        )
+        self._stream.start()
+        console.print("[yellow]🎤 Recording started...[/yellow]")
+        
+    def stop(self) -> Tuple[np.ndarray, int]:
+        """Stop recording and return audio data."""
+        self._stop_flag.set()
+        self._is_recording = False
+        
+        if self._stream:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+        
+        # Collect remaining audio from queue
+        import queue
+        while True:
+            try:
+                chunk = self._audio_queue.get_nowait()
+                self._all_audio.append(chunk.flatten())
+            except queue.Empty:
+                break
+        
+        # Concatenate all audio
+        if self._all_audio:
+            audio_data = np.concatenate(self._all_audio)
+        else:
+            audio_data = np.array([], dtype=np.float32)
+        
+        duration = len(audio_data) / self.sample_rate
+        console.print(f"[green]✓ Recorded {duration:.1f} seconds[/green]")
+        
+        return audio_data, self.sample_rate
+    
+    def get_duration(self) -> float:
+        """Get current recording duration."""
+        total_samples = sum(len(c) for c in self._all_audio)
+        return total_samples / self.sample_rate
+    
+    def is_recording(self) -> bool:
+        """Check if currently recording."""
+        return self._is_recording
+    
+    def collect_chunks(self) -> float:
+        """Collect pending audio chunks and return current amplitude."""
+        import queue
+        
+        rms = 0.0
+        max_samples = int(self.max_duration * self.sample_rate)
+        
+        while True:
+            try:
+                chunk = self._audio_queue.get_nowait()
+                chunk = chunk.flatten()
+                self._all_audio.append(chunk)
+                rms = np.sqrt(np.mean(chunk ** 2))
+                
+                # Check max duration
+                total_samples = sum(len(c) for c in self._all_audio)
+                if total_samples >= max_samples:
+                    self._stop_flag.set()
+                    break
+            except queue.Empty:
+                break
+        
+        return rms
+
+
+# Global recorder instance for GUI
+_recorder: Optional[AudioRecorder] = None
+
+
+def start_recording(
+    sample_rate: int = SAMPLE_RATE,
+    device: Optional[int] = None,
+    max_duration: float = 60.0,
+) -> AudioRecorder:
+    """Start a new recording session."""
+    global _recorder
+    _recorder = AudioRecorder(
+        sample_rate=sample_rate,
+        device=device,
+        max_duration=max_duration,
+    )
+    _recorder.start()
+    return _recorder
+
+
+def stop_recording() -> Tuple[np.ndarray, int]:
+    """Stop the current recording and return audio."""
+    global _recorder
+    if _recorder is None:
+        return np.array([], dtype=np.float32), SAMPLE_RATE
+    
+    audio, sr = _recorder.stop()
+    _recorder = None
+    return audio, sr
+
+
+def get_recorder() -> Optional[AudioRecorder]:
+    """Get the current recorder instance."""
+    return _recorder
+
+
 def record_audio_continuous(
     chunk_duration: float = 0.1,
     sample_rate: int = SAMPLE_RATE,
@@ -93,129 +246,47 @@ def record_audio_continuous(
     min_duration: float = 1.0
 ) -> Tuple[np.ndarray, int]:
     """
-    Record audio continuously using streaming (no gaps) until silence is detected.
-    
-    Args:
-        chunk_duration: Duration of each analysis window in seconds
-        sample_rate: Sample rate in Hz
-        device: Audio device index
-        silence_threshold: RMS threshold below which audio is considered silence
-        silence_duration: Duration of silence to stop recording
-        max_duration: Maximum recording duration
-        min_duration: Minimum recording duration before silence detection kicks in
-    
-    Returns:
-        Tuple of (audio_data as numpy array, sample_rate)
+    Legacy: Record audio continuously until silence is detected.
+    For GUI use, prefer start_recording() and stop_recording().
     """
-    import threading
-    import queue
+    recorder = AudioRecorder(
+        sample_rate=sample_rate,
+        device=device,
+        chunk_duration=chunk_duration,
+        max_duration=max_duration,
+    )
+    recorder.start()
     
-    if device is None:
-        device = get_default_input_device()
-    
-    console.print("\n[yellow]🎤 Listening... (will stop after silence or max duration)[/yellow]")
-    console.print("[dim]Speak now![/dim]\n")
-    
-    # Use a queue to collect audio data from the callback
-    audio_queue = queue.Queue()
-    stop_flag = threading.Event()
-    
-    chunk_samples = int(chunk_duration * sample_rate)
+    import time
     chunks_for_silence = int(silence_duration / chunk_duration)
     min_chunks = int(min_duration / chunk_duration)
-    max_samples = int(max_duration * sample_rate)
-    
-    all_audio = []
     silence_chunks = 0
     total_chunks = 0
     has_speech = False
     
-    def audio_callback(indata, frames, time, status):
-        """Callback for continuous audio stream - no gaps!"""
-        if status:
-            console.print(f"[dim]Audio status: {status}[/dim]")
-        audio_queue.put(indata.copy())
+    console.print("[dim]Recording... (auto-stop on silence)[/dim]")
     
-    console.print("[dim]Starting stream...[/dim]")
+    while True:
+        time.sleep(chunk_duration)
+        rms = recorder.collect_chunks()
+        total_chunks += 1
+        
+        if rms > silence_threshold * 2:
+            has_speech = True
+        
+        if rms < silence_threshold:
+            silence_chunks += 1
+        else:
+            silence_chunks = 0
+        
+        # Stop conditions
+        if total_chunks > min_chunks and has_speech and silence_chunks >= chunks_for_silence:
+            break
+        
+        if recorder.get_duration() >= max_duration:
+            break
     
-    # Use InputStream for continuous, gap-free recording
-    with sd.InputStream(
-        samplerate=sample_rate,
-        channels=1,
-        dtype=np.float32,
-        device=device,
-        blocksize=chunk_samples,
-        callback=audio_callback
-    ):
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Listening...", total=None)
-            
-            while not stop_flag.is_set():
-                try:
-                    # Get audio chunk from queue (with timeout)
-                    chunk = audio_queue.get(timeout=0.5)
-                    chunk = chunk.flatten()
-                    all_audio.append(chunk)
-                    total_chunks += 1
-                    
-                    # Calculate RMS for this chunk
-                    rms = np.sqrt(np.mean(chunk ** 2))
-                    
-                    # Track if we've heard any speech
-                    if rms > silence_threshold * 2:
-                        has_speech = True
-                    
-                    # Update silence detection
-                    if rms < silence_threshold:
-                        silence_chunks += 1
-                    else:
-                        silence_chunks = 0
-                    
-                    # Calculate total duration
-                    total_samples = sum(len(c) for c in all_audio)
-                    duration = total_samples / sample_rate
-                    
-                    # Update progress display
-                    if silence_chunks > 0:
-                        progress.update(task, description=f"Recording {duration:.1f}s - silence ({silence_chunks}/{chunks_for_silence})...")
-                    else:
-                        progress.update(task, description=f"Recording {duration:.1f}s...")
-                    
-                    # Stop conditions
-                    if total_samples >= max_samples:
-                        progress.update(task, description=f"Stopped (max {max_duration}s reached)")
-                        break
-                    
-                    # Only stop on silence after minimum duration AND after hearing speech
-                    if (total_chunks > min_chunks and 
-                        has_speech and 
-                        silence_chunks >= chunks_for_silence):
-                        progress.update(task, description="Stopped (silence detected)")
-                        break
-                        
-                except queue.Empty:
-                    continue
-    
-    # Concatenate all audio (continuous, no gaps!)
-    if all_audio:
-        audio_data = np.concatenate(all_audio)
-    else:
-        audio_data = np.array([], dtype=np.float32)
-    
-    # Trim trailing silence (keep a little bit)
-    if silence_chunks > 0 and len(all_audio) > silence_chunks:
-        trim_samples = int((silence_chunks - 2) * chunk_samples)
-        if trim_samples > 0 and trim_samples < len(audio_data):
-            audio_data = audio_data[:-trim_samples]
-    
-    duration_recorded = len(audio_data) / sample_rate
-    console.print(f"[green]✓ Recorded {duration_recorded:.1f} seconds of audio[/green]")
-    
-    return audio_data, sample_rate
+    return recorder.stop()
 
 
 def test_microphone(duration: float = 2.0) -> bool:

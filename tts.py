@@ -249,11 +249,19 @@ class TextToSpeech:
                 # Use CustomVoice synthesis
                 speaker_name = self.get_speaker(lang, speaker)
                 
+                # Estimate max tokens needed: ~12 tokens/sec audio, ~3 words/sec speech
+                # For safety, allow up to 30 seconds of audio output
+                # This significantly speeds up inference by limiting generation
+                estimated_words = len(text.split())
+                max_audio_seconds = max(10, min(60, estimated_words * 0.5))  # 0.5 sec per word, 10-60s range
+                max_tokens = int(max_audio_seconds * 12 * 1.5)  # 12Hz * 1.5x safety margin
+                
                 wavs, sr = self._model.generate_custom_voice(
                     text=text,
                     language=lang,
                     speaker=speaker_name,
                     instruct=instruct or "",
+                    max_new_tokens=max_tokens,
                 )
                 
                 audio = wavs[0]

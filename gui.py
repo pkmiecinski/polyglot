@@ -42,7 +42,7 @@ from PyQt6.QtGui import (
 )
 
 # Project imports
-from audio_capture import record_audio_continuous, SAMPLE_RATE
+from audio_capture import start_recording, stop_recording, get_recorder, SAMPLE_RATE
 from transcriber import Transcriber
 from translator import Translator
 from tts import TextToSpeech, get_supported_languages as get_tts_languages, is_language_supported
@@ -56,17 +56,23 @@ APP_NAME = "Polyglot"
 APP_VERSION = "1.0.0"
 
 COLORS = {
-    'bg_dark': '#1a1a2e',
-    'bg_medium': '#16213e',
-    'bg_light': '#0f3460',
-    'accent': '#e94560',
-    'accent_light': '#ff6b8a',
-    'success': '#00d9a0',
-    'warning': '#ffc107',
-    'error': '#ff5252',
-    'text': '#ffffff',
-    'text_dim': '#8892b0',
-    'border': '#233554',
+    'bg_dark': '#09090b',        # zinc-950
+    'bg_medium': '#18181b',      # zinc-900
+    'bg_light': '#27272a',       # zinc-800
+    'bg_card': '#1c1c1f',        # card background
+    'accent': '#ef4444',         # red-500 for recording
+    'accent_light': '#f87171',   # red-400
+    'primary': '#3b82f6',        # blue-500
+    'primary_light': '#60a5fa',  # blue-400
+    'success': '#22c55e',        # green-500
+    'warning': '#eab308',        # yellow-500
+    'error': '#ef4444',          # red-500
+    'text': '#fafafa',           # zinc-50
+    'text_muted': '#a1a1aa',     # zinc-400
+    'text_dim': '#71717a',       # zinc-500
+    'border': '#27272a',         # zinc-800
+    'border_light': '#3f3f46',   # zinc-700
+    'ring': '#3b82f6',           # focus ring
 }
 
 STYLESHEET = f"""
@@ -76,97 +82,108 @@ QMainWindow {{
 
 QWidget {{
     color: {COLORS['text']};
-    font-family: 'SF Pro Display', 'Segoe UI', 'Helvetica Neue', sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+    font-size: 13px;
 }}
 
 QGroupBox {{
-    background-color: {COLORS['bg_medium']};
+    background-color: {COLORS['bg_card']};
     border: 1px solid {COLORS['border']};
-    border-radius: 12px;
-    margin-top: 16px;
+    border-radius: 8px;
+    margin-top: 20px;
     padding: 16px;
-    font-weight: bold;
-    font-size: 13px;
+    padding-top: 24px;
 }}
 
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding: 0 12px;
-    color: {COLORS['text_dim']};
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+    padding: 4px 12px;
+    color: {COLORS['text_muted']};
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
 }}
 
 QTextEdit {{
-    background-color: {COLORS['bg_dark']};
+    background-color: {COLORS['bg_medium']};
     border: 1px solid {COLORS['border']};
-    border-radius: 8px;
+    border-radius: 6px;
     padding: 12px;
-    font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', monospace;
+    font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
     font-size: 12px;
-    line-height: 1.5;
+    selection-background-color: {COLORS['primary']};
+}}
+
+QTextEdit:focus {{
+    border-color: {COLORS['border_light']};
 }}
 
 QComboBox {{
-    background-color: {COLORS['bg_light']};
+    background-color: {COLORS['bg_medium']};
     border: 1px solid {COLORS['border']};
-    border-radius: 8px;
+    border-radius: 6px;
     padding: 8px 12px;
-    min-width: 150px;
-    font-size: 13px;
+    min-width: 160px;
 }}
 
 QComboBox:hover {{
-    border-color: {COLORS['accent']};
+    border-color: {COLORS['border_light']};
+}}
+
+QComboBox:focus {{
+    border-color: {COLORS['primary']};
 }}
 
 QComboBox::drop-down {{
     border: none;
-    padding-right: 12px;
+    padding-right: 8px;
 }}
 
 QComboBox QAbstractItemView {{
     background-color: {COLORS['bg_medium']};
     border: 1px solid {COLORS['border']};
-    selection-background-color: {COLORS['accent']};
+    border-radius: 6px;
+    selection-background-color: {COLORS['bg_light']};
+    outline: none;
 }}
 
 QProgressBar {{
-    background-color: {COLORS['bg_dark']};
+    background-color: {COLORS['bg_medium']};
     border: none;
     border-radius: 4px;
-    height: 8px;
+    height: 6px;
     text-align: center;
 }}
 
 QProgressBar::chunk {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 {COLORS['accent']}, stop:1 {COLORS['accent_light']});
+    background-color: {COLORS['primary']};
     border-radius: 4px;
 }}
 
 QCheckBox {{
     spacing: 8px;
-    font-size: 13px;
 }}
 
 QCheckBox::indicator {{
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
     border-radius: 4px;
-    border: 2px solid {COLORS['border']};
-    background-color: {COLORS['bg_dark']};
+    border: 1px solid {COLORS['border_light']};
+    background-color: {COLORS['bg_medium']};
+}}
+
+QCheckBox::indicator:hover {{
+    border-color: {COLORS['text_dim']};
 }}
 
 QCheckBox::indicator:checked {{
-    background-color: {COLORS['accent']};
-    border-color: {COLORS['accent']};
+    background-color: {COLORS['primary']};
+    border-color: {COLORS['primary']};
 }}
 
 QLabel {{
-    font-size: 13px;
+    background: transparent;
 }}
 
 QSplitter::handle {{
@@ -174,11 +191,31 @@ QSplitter::handle {{
 }}
 
 QSplitter::handle:horizontal {{
-    width: 2px;
+    width: 1px;
 }}
 
 QSplitter::handle:vertical {{
-    height: 2px;
+    height: 1px;
+}}
+
+QScrollBar:vertical {{
+    background-color: {COLORS['bg_dark']};
+    width: 8px;
+    border-radius: 4px;
+}}
+
+QScrollBar::handle:vertical {{
+    background-color: {COLORS['border_light']};
+    border-radius: 4px;
+    min-height: 20px;
+}}
+
+QScrollBar::handle:vertical:hover {{
+    background-color: {COLORS['text_dim']};
+}}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
 }}
 """
 
@@ -287,7 +324,7 @@ class ModelLoaderThread(QThread):
 
 
 class RecordingThread(QThread):
-    """Thread for audio recording."""
+    """Thread for audio recording with manual stop control."""
     
     started = pyqtSignal()
     progress = pyqtSignal(float, float)  # duration, amplitude
@@ -298,22 +335,28 @@ class RecordingThread(QThread):
     def __init__(self):
         super().__init__()
         self._stop_requested = False
+        self._recorder = None
         
     def run(self):
         try:
             self.started.emit()
-            self.log.emit("🎤 Recording started... speak now!", "info")
+            self.log.emit("🎤 Recording... click Stop when done", "info")
             
-            # Use continuous recording with silence detection
-            audio, sr = record_audio_continuous(
-                silence_threshold=0.008,
-                silence_duration=1.5,
-                max_duration=30.0,
-                min_duration=1.0,
-            )
+            # Start recording
+            self._recorder = start_recording(max_duration=60.0)
+            
+            # Poll for stop or max duration
+            while not self._stop_requested and self._recorder.is_recording():
+                self._recorder.collect_chunks()
+                duration = self._recorder.get_duration()
+                self.progress.emit(duration, 0.0)
+                self.msleep(100)  # 100ms poll interval
+            
+            # Stop and get audio
+            audio, sr = stop_recording()
             
             duration = len(audio) / sr
-            self.log.emit(f"Recording captured: {duration:.1f}s", "info")
+            self.log.emit(f"Recording stopped: {duration:.1f}s captured", "info")
             self.finished.emit(audio, sr)
             
         except Exception as e:
@@ -321,6 +364,7 @@ class RecordingThread(QThread):
             self.error.emit(str(e))
     
     def stop(self):
+        """Request recording to stop."""
         self._stop_requested = True
 
 
@@ -455,19 +499,19 @@ class TranslationThread(QThread):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class RecordButton(QPushButton):
-    """Animated recording button with pulsing effect."""
+    """Modern recording button with clear Start/Stop states."""
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(120, 120)
+        self.setFixedSize(140, 48)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._recording = False
-        self._pulse_opacity = 0.0
         
-        # Pulse animation
+        # Pulse animation for recording state
         self._pulse_timer = QTimer(self)
         self._pulse_timer.timeout.connect(self._update_pulse)
         self._pulse_phase = 0
+        self._pulse_opacity = 0.0
         
         self._update_style()
         
@@ -476,33 +520,38 @@ class RecordButton(QPushButton):
             self.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {COLORS['error']};
-                    border: 4px solid {COLORS['error']};
-                    border-radius: 60px;
+                    border: none;
+                    border-radius: 8px;
                     font-size: 14px;
-                    font-weight: bold;
+                    font-weight: 600;
                     color: white;
+                    padding: 0 24px;
+                }}
+                QPushButton:hover {{
+                    background-color: #dc2626;
                 }}
             """)
-            self.setText("■ STOP")
+            self.setText("◼  Stop Recording")
         else:
             self.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: {COLORS['accent']};
-                    border: 4px solid {COLORS['accent']};
-                    border-radius: 60px;
+                    background-color: {COLORS['primary']};
+                    border: none;
+                    border-radius: 8px;
                     font-size: 14px;
-                    font-weight: bold;
+                    font-weight: 600;
                     color: white;
+                    padding: 0 24px;
                 }}
                 QPushButton:hover {{
-                    background-color: {COLORS['accent_light']};
-                    border-color: {COLORS['accent_light']};
+                    background-color: {COLORS['primary_light']};
                 }}
-                QPushButton:pressed {{
-                    background-color: #c83050;
+                QPushButton:disabled {{
+                    background-color: {COLORS['bg_light']};
+                    color: {COLORS['text_dim']};
                 }}
             """)
-            self.setText("● REC")
+            self.setText("●  Start Recording")
     
     def set_recording(self, recording: bool):
         self._recording = recording
@@ -522,23 +571,7 @@ class RecordButton(QPushButton):
     def paintEvent(self, event):
         super().paintEvent(event)
         
-        if self._recording:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            
-            # Draw pulsing ring
-            color = QColor(COLORS['error'])
-            color.setAlphaF(self._pulse_opacity * 0.5)
-            
-            pen = QPen(color)
-            pen.setWidth(3)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            
-            margin = int(8 + self._pulse_opacity * 8)
-            painter.drawEllipse(margin, margin, 
-                               self.width() - 2*margin, 
-                               self.height() - 2*margin)
+        # No extra painting needed for the cleaner button style
 
 
 class LogWidget(QTextEdit):
@@ -559,11 +592,11 @@ class LogWidget(QTextEdit):
         
     def log(self, message: str, level: str = "info"):
         """Add a timestamped log message."""
-        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        timestamp = datetime.now().strftime("%H:%M:%S")
         color = self.LEVEL_COLORS.get(level, COLORS['text'])
         
         # Format the HTML
-        html = f'<span style="color: {COLORS["text_dim"]}">[{timestamp}]</span> '
+        html = f'<span style="color: {COLORS["text_dim"]}; font-size: 11px;">{timestamp}</span> '
         html += f'<span style="color: {color}">{message}</span>'
         
         self.append(html)
@@ -579,15 +612,15 @@ class StatusIndicator(QWidget):
     def __init__(self, label: str, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(10)
         
         self._indicator = QLabel("○")
-        self._indicator.setFixedWidth(20)
+        self._indicator.setFixedWidth(16)
         self._indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self._label = QLabel(label)
-        self._label.setStyleSheet(f"color: {COLORS['text_dim']};")
+        self._label.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 13px;")
         
         layout.addWidget(self._indicator)
         layout.addWidget(self._label)
@@ -604,7 +637,7 @@ class StatusIndicator(QWidget):
             'error': (f"color: {COLORS['error']};", "✗"),
         }
         style, icon = styles.get(status, styles['idle'])
-        self._indicator.setStyleSheet(style + " font-size: 16px;")
+        self._indicator.setStyleSheet(style + " font-size: 14px;")
         self._indicator.setText(icon)
 
 
@@ -615,46 +648,46 @@ class ResultCard(QFrame):
         super().__init__(parent)
         self.setStyleSheet(f"""
             QFrame {{
-                background-color: {COLORS['bg_medium']};
+                background-color: {COLORS['bg_card']};
                 border: 1px solid {COLORS['border']};
-                border-radius: 12px;
-                padding: 16px;
+                border-radius: 8px;
             }}
         """)
         
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
         
         # Source section
-        self._source_lang = QLabel("Source Language")
+        self._source_lang = QLabel("Detected Language")
         self._source_lang.setStyleSheet(f"""
             font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
+            font-weight: 500;
             color: {COLORS['text_dim']};
+            letter-spacing: 0.5px;
         """)
         self._source_text = QLabel("—")
-        self._source_text.setStyleSheet("font-size: 16px;")
+        self._source_text.setStyleSheet(f"font-size: 14px; color: {COLORS['text_muted']};")
         self._source_text.setWordWrap(True)
         
         # Divider
         divider = QFrame()
-        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setFixedHeight(1)
         divider.setStyleSheet(f"background-color: {COLORS['border']};")
         
         # Translation section
         self._target_lang = QLabel("Translation")
         self._target_lang.setStyleSheet(f"""
             font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
+            font-weight: 500;
             color: {COLORS['text_dim']};
+            letter-spacing: 0.5px;
         """)
         self._target_text = QLabel("—")
         self._target_text.setStyleSheet(f"""
-            font-size: 18px;
-            font-weight: bold;
-            color: {COLORS['accent_light']};
+            font-size: 16px;
+            font-weight: 600;
+            color: {COLORS['text']};
         """)
         self._target_text.setWordWrap(True)
         
@@ -664,7 +697,9 @@ class ResultCard(QFrame):
         
         layout.addWidget(self._source_lang)
         layout.addWidget(self._source_text)
+        layout.addSpacing(4)
         layout.addWidget(divider)
+        layout.addSpacing(4)
         layout.addWidget(self._target_lang)
         layout.addWidget(self._target_text)
         layout.addWidget(self._duration)
@@ -675,11 +710,11 @@ class ResultCard(QFrame):
         self._source_text.setText(result.source_text)
         self._target_lang.setText(f"→ {result.target_language}")
         self._target_text.setText(result.translated_text)
-        self._duration.setText(f"Total time: {result.duration_ms}ms")
+        self._duration.setText(f"Completed in {result.duration_ms}ms")
         
     def clear(self):
         """Clear the result display."""
-        self._source_lang.setText("Source Language")
+        self._source_lang.setText("Detected Language")
         self._source_text.setText("—")
         self._target_lang.setText("Translation")
         self._target_text.setText("—")
@@ -749,18 +784,19 @@ class PolyglotWindow(QMainWindow):
         # Header
         header = QLabel(f"🌐 {APP_NAME}")
         header.setStyleSheet(f"""
-            font-size: 28px;
-            font-weight: bold;
+            font-size: 24px;
+            font-weight: 700;
             color: {COLORS['text']};
-            padding: 8px 0;
+            padding: 4px 0;
         """)
         
-        subtitle = QLabel("Edge AI Translation Device")
-        subtitle.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 14px;")
+        subtitle = QLabel("Edge AI Translation")
+        subtitle.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 13px; margin-bottom: 8px;")
         
         # Model status group
-        status_group = QGroupBox("MODEL STATUS")
+        status_group = QGroupBox("Models")
         status_layout = QVBoxLayout(status_group)
+        status_layout.setSpacing(4)
         
         self._asr_status = StatusIndicator("ASR (Qwen3-ASR)")
         self._trans_status = StatusIndicator("Translation (NLLB-200)")
@@ -768,86 +804,90 @@ class PolyglotWindow(QMainWindow):
         
         self._loading_progress = QProgressBar()
         self._loading_progress.setTextVisible(False)
+        self._loading_progress.setFixedHeight(4)
         
         status_layout.addWidget(self._asr_status)
         status_layout.addWidget(self._trans_status)
         status_layout.addWidget(self._tts_status)
+        status_layout.addSpacing(8)
         status_layout.addWidget(self._loading_progress)
         
         # Settings group
-        settings_group = QGroupBox("SETTINGS")
+        settings_group = QGroupBox("Settings")
         settings_layout = QVBoxLayout(settings_group)
+        settings_layout.setSpacing(12)
         
         # Target language
-        lang_layout = QHBoxLayout()
-        lang_label = QLabel("Target Language:")
+        lang_label = QLabel("Target Language")
+        lang_label.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 12px;")
         self._lang_combo = QComboBox()
         self._lang_combo.addItems(get_tts_languages())
         self._lang_combo.setCurrentText("English")
-        lang_layout.addWidget(lang_label)
-        lang_layout.addWidget(self._lang_combo)
-        lang_layout.addStretch()
         
         # Voice cloning
         self._clone_checkbox = QCheckBox("Clone voice from recording")
         self._clone_checkbox.setToolTip("Speak the translation using your own voice")
         
-        settings_layout.addLayout(lang_layout)
+        settings_layout.addWidget(lang_label)
+        settings_layout.addWidget(self._lang_combo)
         settings_layout.addWidget(self._clone_checkbox)
         
-        # Recording section
-        rec_group = QGroupBox("RECORDING")
-        rec_layout = QVBoxLayout(rec_group)
-        rec_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Recording controls (no group box, cleaner)
+        rec_widget = QWidget()
+        rec_layout = QVBoxLayout(rec_widget)
+        rec_layout.setContentsMargins(0, 8, 0, 0)
+        rec_layout.setSpacing(12)
         
         self._record_btn = RecordButton()
         self._record_btn.clicked.connect(self._toggle_recording)
         self._record_btn.setEnabled(False)
         
         self._status_label = QLabel("Loading models...")
-        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 13px;")
+        self._status_label.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 12px;")
         
-        rec_layout.addWidget(self._record_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._duration_label = QLabel("")
+        self._duration_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        
+        rec_layout.addWidget(self._record_btn)
         rec_layout.addWidget(self._status_label)
+        rec_layout.addWidget(self._duration_label)
         
         # Result card
         self._result_card = ResultCard()
         
         # Replay button
-        replay_layout = QHBoxLayout()
-        self._replay_btn = QPushButton("🔊 Replay Last")
+        self._replay_btn = QPushButton("🔊  Replay Last")
         self._replay_btn.setEnabled(False)
         self._replay_btn.clicked.connect(self._replay_audio)
+        self._replay_btn.setFixedHeight(40)
         self._replay_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {COLORS['bg_light']};
+                background-color: transparent;
                 border: 1px solid {COLORS['border']};
-                border-radius: 8px;
-                padding: 10px 20px;
+                border-radius: 6px;
+                padding: 0 16px;
                 font-size: 13px;
+                color: {COLORS['text_muted']};
             }}
             QPushButton:hover {{
-                background-color: {COLORS['accent']};
-                border-color: {COLORS['accent']};
+                background-color: {COLORS['bg_light']};
+                border-color: {COLORS['border_light']};
+                color: {COLORS['text']};
             }}
             QPushButton:disabled {{
-                background-color: {COLORS['bg_dark']};
                 color: {COLORS['text_dim']};
+                border-color: {COLORS['border']};
             }}
         """)
-        replay_layout.addStretch()
-        replay_layout.addWidget(self._replay_btn)
-        replay_layout.addStretch()
         
         # Assemble layout
         layout.addWidget(header)
         layout.addWidget(subtitle)
         layout.addWidget(status_group)
         layout.addWidget(settings_group)
-        layout.addWidget(rec_group)
+        layout.addWidget(rec_widget)
         layout.addWidget(self._result_card)
-        layout.addLayout(replay_layout)
+        layout.addWidget(self._replay_btn)
         layout.addStretch()
         
         return panel
@@ -857,41 +897,45 @@ class PolyglotWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(12)
         
-        # Header
-        log_header = QLabel("📋 Activity Log")
-        log_header.setStyleSheet(f"""
-            font-size: 16px;
-            font-weight: bold;
-            color: {COLORS['text']};
-            padding: 8px 0;
-        """)
-        
-        # Log widget
+        # Log widget (create first so we can connect to it)
         self._log = LogWidget()
         
+        # Header row
+        header_layout = QHBoxLayout()
+        
+        log_header = QLabel("Activity Log")
+        log_header.setStyleSheet(f"""
+            font-size: 14px;
+            font-weight: 600;
+            color: {COLORS['text']};
+        """)
+        
         # Clear button
-        clear_btn = QPushButton("Clear Log")
+        clear_btn = QPushButton("Clear")
         clear_btn.clicked.connect(self._log.clear)
+        clear_btn.setFixedSize(60, 28)
         clear_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: transparent;
                 border: 1px solid {COLORS['border']};
-                border-radius: 6px;
-                padding: 6px 12px;
-                font-size: 12px;
-                color: {COLORS['text_dim']};
+                border-radius: 4px;
+                font-size: 11px;
+                color: {COLORS['text_muted']};
             }}
             QPushButton:hover {{
-                border-color: {COLORS['accent']};
-                color: {COLORS['accent']};
+                border-color: {COLORS['border_light']};
+                color: {COLORS['text']};
             }}
         """)
         
-        layout.addWidget(log_header)
+        header_layout.addWidget(log_header)
+        header_layout.addStretch()
+        header_layout.addWidget(clear_btn)
+        
+        layout.addLayout(header_layout)
         layout.addWidget(self._log, stretch=1)
-        layout.addWidget(clear_btn, alignment=Qt.AlignmentFlag.AlignRight)
         
         return panel
         
@@ -936,11 +980,11 @@ class PolyglotWindow(QMainWindow):
             self._tts = self._loader_thread.tts
             
             self._record_btn.setEnabled(True)
-            self._status_label.setText("Ready to record")
+            self._status_label.setText("Ready")
             self._loading_progress.setVisible(False)
             
             self._log.log("", "debug")
-            self._log.log("🎤 Press the record button to start", "info")
+            self._log.log("🎤 Click Start Recording to begin", "info")
         else:
             self._state = AppState.ERROR
             self._status_label.setText(f"Error: {message}")
@@ -951,29 +995,48 @@ class PolyglotWindow(QMainWindow):
     def _toggle_recording(self):
         """Toggle recording state."""
         if self._state == AppState.RECORDING:
-            # Stop recording (handled by silence detection)
-            self._log.log("Waiting for silence to stop recording...", "info")
+            self._stop_recording()
         else:
             self._start_recording()
+    
+    def _stop_recording(self):
+        """Stop the current recording."""
+        if self._recording_thread and self._recording_thread.isRunning():
+            self._log.log("Stopping recording...", "info")
+            self._recording_thread.stop()
             
     def _start_recording(self):
         """Start audio recording."""
         self._state = AppState.RECORDING
         self._record_btn.set_recording(True)
-        self._status_label.setText("Recording... (stops on silence)")
+        self._status_label.setText("Recording...")
+        self._duration_label.setText("0.0s")
         self._result_card.clear()
         
         self._recording_thread = RecordingThread()
+        self._recording_thread.progress.connect(self._on_recording_progress)
         self._recording_thread.finished.connect(self._on_recording_finished)
         self._recording_thread.error.connect(self._on_recording_error)
         self._recording_thread.log.connect(self._log.log)
         self._recording_thread.start()
+    
+    def _on_recording_progress(self, duration: float, amplitude: float):
+        """Update recording progress display."""
+        self._duration_label.setText(f"{duration:.1f}s")
         
     def _on_recording_finished(self, audio: np.ndarray, sample_rate: int):
         """Handle recording completion."""
         self._record_btn.set_recording(False)
         self._state = AppState.PROCESSING
         self._status_label.setText("Processing...")
+        self._duration_label.setText("")
+        
+        # Check if we have audio
+        if len(audio) < sample_rate * 0.5:  # Less than 0.5 seconds
+            self._log.log("Recording too short, please try again", "warning")
+            self._state = AppState.READY
+            self._status_label.setText("Ready")
+            return
         
         # Create translation job
         job = TranslationJob(
@@ -1002,7 +1065,8 @@ class PolyglotWindow(QMainWindow):
         """Handle recording error."""
         self._record_btn.set_recording(False)
         self._state = AppState.READY
-        self._status_label.setText("Ready to record")
+        self._status_label.setText("Ready")
+        self._duration_label.setText("")
         self._log.log(f"Recording failed: {error}", "error")
         
     def _on_translation_finished(self, result: TranslationResult):
@@ -1014,7 +1078,7 @@ class PolyglotWindow(QMainWindow):
         
         # Play the audio
         if result.audio_data is not None:
-            self._status_label.setText("Playing translation...")
+            self._status_label.setText("Playing...")
             self._log.log("🔊 Playing audio...", "info")
             
             import sounddevice as sd
@@ -1025,14 +1089,14 @@ class PolyglotWindow(QMainWindow):
                 self._log.log(f"Playback error: {e}", "error")
         
         self._state = AppState.READY
-        self._status_label.setText("Ready to record")
+        self._status_label.setText("Ready")
         self._log.log("", "debug")
         self._log.log("🎤 Ready for next recording", "info")
         
     def _on_translation_error(self, error: str):
         """Handle translation error."""
         self._state = AppState.READY
-        self._status_label.setText("Ready to record")
+        self._status_label.setText("Ready")
         
     def _replay_audio(self):
         """Replay the last audio output."""
